@@ -1,0 +1,50 @@
+[project]
+name = "shelfwarden"
+version = "0.1.0"
+description = "An agentic media library steward for Plex"
+authors = [
+    { name = "“Todd", email = "159606618+wsventures@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "typer>=0.27",
+]
+
+[project.scripts]
+shelfwarden = "shelfwarden.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+    "import-linter",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+# ruff formats Python code blocks inside Markdown. Documentation here is
+# hand-authored prose whose snippets are sometimes deliberately non-idiomatic
+# (docs/development-practices.md shows a recipe that does NOT work, on purpose),
+# and docs/shelfwarden.md is the project spec. Source tooling must not rewrite them.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.importlinter]
+root_package = "shelfwarden"
+include_external_packages = true
+# Contracts land in roadmap step 0.1 feature 5. include_external_packages is
+# required there (import-linter refuses to run without it when forbidden
+# modules are external) and is set now so the block is never added without it.
