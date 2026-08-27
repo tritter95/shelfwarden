@@ -262,7 +262,19 @@ Two consequences, both implemented in `library/plex.py`:
 
 `_autoReload` is read per object at construction, not at import, so setting it programmatically before building the server does take effect — unlike `TIMEOUT`, which `plexapi/__init__.py` binds once at import time.
 
-**Timestamps have the same shape of problem.** By default `plexapi.utils.toDatetime` returns **naive local time**: epoch `1704067200` is `2024-01-01T00:00:00Z`, but plexapi renders it as `2023-12-31 19:00` with no tzinfo on a UTC-5 machine. An export would then depend on the timezone of the machine that produced it. Call `plexapi.utils.setDatetimeTimezone("utc")` before building any object, and refuse a naive datetime at the mapping boundary rather than guessing one.
+**Timestamps have the same shape of problem — twice over.** By default `plexapi.utils.toDatetime` returns **naive local time**: epoch `1704067200` is `2024-01-01T00:00:00Z`, but plexapi renders it as `2023-12-31 19:00` with no tzinfo on a UTC-5 machine. An export would then depend on the timezone of the machine that produced it.
+
+The obvious remedy, `setDatetimeTimezone("utc")`, **fails open in exactly the same way as the auto-reload switch**: it resolves its argument as an IANA name through `ZoneInfo`, and turns `ZoneInfoNotFoundError` into `tzinfo = None` behind a `log.warning` that plexapi's `NullHandler` swallows. On a host whose tzdata lacks that entry, timestamps silently revert to naive local time. This cost a red CI run — it passed locally and failed on the runner, which is the worst way to find out.
+
+Assign the stdlib constant directly instead. `plexapi.utils.DATETIME_TIMEZONE = datetime.UTC` needs no system timezone database at all:
+
+```python
+plexapi.utils.DATETIME_TIMEZONE = UTC          # not setDatetimeTimezone("utc")
+```
+
+Then refuse a naive datetime at the mapping boundary rather than guessing one — that guard is what turned a silent, machine-dependent export into a loud test failure.
+
+The pattern worth generalizing: **plexapi's configuration helpers prefer a permissive default over an error.** Auto-reload and the timezone both do it. Assume any plexapi setting may not have taken, and assert the property you actually need rather than the call you made.
 
 Then call `reload()` explicitly with the exact includes needed:
 

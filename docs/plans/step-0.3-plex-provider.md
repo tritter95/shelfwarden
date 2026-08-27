@@ -10,6 +10,14 @@ Written 2026-08-26 against commit `7e468da`, with 0.1 and 0.2 complete and CI gr
 > default (§4.3), and an external package needs **one** `ignore_imports` line
 > rather than the pair step 0.1 planned, because grimp collapses external
 > packages to a single node (§1.3).
+>
+> A third was found by CI rather than by reading: `setDatetimeTimezone("utc")`
+> fails open exactly like the auto-reload switch — a `ZoneInfoNotFoundError`
+> becomes `tzinfo = None` behind a swallowed log warning — so it worked locally
+> and silently restored naive timestamps on the runner. Assigning `datetime.UTC`
+> directly removes the tzdata dependency. The naive-datetime guard at the mapping
+> boundary is what turned that into a red build instead of a quietly
+> machine-dependent export.
 
 Every finding in §2 was produced by reading and running plexapi 4.18.2. One of them
 answers a question `development-practices.md` §4.3 explicitly deferred to this step

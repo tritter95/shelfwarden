@@ -5,6 +5,7 @@ suite is also evidence that nothing reached for the network.
 """
 
 import os
+from datetime import UTC
 from xml.etree import ElementTree as ET
 
 import plexapi
@@ -94,6 +95,15 @@ class TestTimestamps:
 
         monkeypatch.setattr(utils, "DATETIME_TIMEZONE", None)
         assert utils.toDatetime("1704067200").tzinfo is None
+
+    def test_the_timezone_does_not_depend_on_a_system_tzdata_entry(self):
+        """setDatetimeTimezone() resolves an IANA name and turns a lookup failure
+        into tzinfo=None behind a log warning -- the same fails-open pattern as
+        auto-reload. It cost a red CI run. The stdlib constant needs no tzdata."""
+        import plexapi.utils as utils
+
+        configure_plexapi()
+        assert utils.DATETIME_TIMEZONE is UTC
 
     def test_configure_makes_timestamps_aware_and_correct(self):
         configure_plexapi()

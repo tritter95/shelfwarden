@@ -137,11 +137,18 @@ def configure_plexapi() -> None:
     config.ini and land back in the fails-open case. Owning the value is the only
     way to win.
 
-    The timezone is set programmatically because plexapi binds it at import time,
-    which is already past by the time this module is imported.
+    The timezone is assigned directly rather than through
+    `setDatetimeTimezone("utc")`, which resolves its argument as an IANA name via
+    `ZoneInfo` and -- on the same fails-open pattern as auto-reload -- turns a
+    `ZoneInfoNotFoundError` into `tzinfo = None` behind a log warning nobody sees.
+    On a host without the matching tzdata entry that silently restores naive
+    local-time timestamps. `datetime.UTC` is a stdlib constant and needs no
+    system timezone database at all.
     """
     os.environ["PLEXAPI_PLEXAPI_AUTORELOAD"] = "false"
-    plexapi.utils.setDatetimeTimezone("utc")
+    plexapi.utils.DATETIME_TIMEZONE = UTC
+    if plexapi.utils.DATETIME_TIMEZONE is not UTC:  # pragma: no cover - defensive
+        raise LibraryProtocolError("could not pin plexapi timestamps to UTC")
 
 
 def autoreload_is_off() -> bool:
