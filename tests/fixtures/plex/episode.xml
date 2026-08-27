@@ -1,0 +1,13 @@
+<!-- index is the episode number, parentIndex the season: the two values
+     episode_wrong_season and absolute_vs_seasonal move. -->
+<Video ratingKey="4" key="/library/metadata/4" type="episode"
+       title="The Target" index="1" parentIndex="1"
+       parentRatingKey="3" parentTitle="Season 1"
+       grandparentRatingKey="2" grandparentTitle="The Wire"
+       year="2002" originallyAvailableAt="2002-06-02" duration="3600000"
+       addedAt="1704067200" updatedAt="1704067200">
+  <Guid id="tvdb://332179"/>
+  <Media id="13" container="mkv" videoResolution="720">
+    <Part id="14" file="/media/TV/The Wire/S01/S01E01.mkv" size="2000000000" container="mkv"/>
+  </Media>
+</Video>

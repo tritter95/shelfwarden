@@ -1,0 +1,10 @@
+<!-- The same film in a legacy com.plexapp.agents.imdb library: no Guid children
+     at all, the whole identity is in the single legacy guid string. This is
+     where wrong-match problems concentrate. -->
+<Video ratingKey="1702" key="/library/metadata/1702" type="movie"
+       title="Amelie" year="2001" guid="com.plexapp.agents.imdb://tt0211915?lang=en"
+       addedAt="1704067200" updatedAt="1704067200">
+  <Media id="11" container="avi" videoResolution="sd">
+    <Part id="12" file="/media/Movies/Amelie.avi" size="700000000" container="avi"/>
+  </Media>
+</Video>

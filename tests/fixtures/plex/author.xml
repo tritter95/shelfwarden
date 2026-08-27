@@ -1,0 +1,6 @@
+<Directory ratingKey="5" key="/library/metadata/5/children" type="artist"
+           title="Brandon Sanderson" titleSort="Sanderson, Brandon" childCount="12"
+           guid="com.plexapp.agents.audnexus://B00X5A2AF6?lang=en"
+           addedAt="1704067200" updatedAt="1704067200">
+  <Field name="title" locked="1"/>
+</Directory>

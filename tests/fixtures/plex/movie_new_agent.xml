@@ -1,0 +1,22 @@
+<!-- A movie matched by the current tv.plex.agents.movie: a plex:// primary guid
+     with external ids as Guid children. -->
+<Video ratingKey="1701" key="/library/metadata/1701" type="movie"
+       title="Amélie" titleSort="Amelie" year="2001"
+       summary="A shy waitress decides to change the lives of those around her."
+       guid="plex://movie/5d776b9ad0a1a5001f4b5b1c"
+       thumb="/library/metadata/1701/thumb/1699999999"
+       art="/library/metadata/1701/art/1699999999"
+       addedAt="1704067200" updatedAt="1704067200"
+       editionTitle="Director's Cut" originalTitle="Le Fabuleux Destin d'Amélie Poulain"
+       contentRating="R" studio="UGC" tagline="She'll change your life."
+       rating="8.3" audienceRating="9.1" duration="7740000"
+       originallyAvailableAt="2001-04-25">
+  <Guid id="imdb://tt0211915"/>
+  <Guid id="tmdb://194"/>
+  <Field name="title" locked="1"/>
+  <Field name="summary" locked="0"/>
+  <Media id="9" container="mkv" videoResolution="1080" duration="7740000">
+    <Part id="10" file="/media/Movies/Amélie (2001)/Amélie (2001).mkv"
+          size="8000000000" container="mkv" duration="7740000"/>
+  </Media>
+</Video>

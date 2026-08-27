@@ -78,7 +78,8 @@ forbidden_modules = ["plexapi"]
 **Five things verified by actually running this** (import-linter 2.13 / grimp 3.15), every one of which fails confusingly otherwise:
 
 - **`include_external_packages = true` is mandatory here.** Three of the contracts forbid *external* packages, and without this flag import-linter refuses to run at all: `"The top level configuration must have include_external_packages=True when there are external forbidden modules."`
-- **A wildcard can only replace a whole module segment.** `"shelfwarden.library.plex -> plexapi*"` — the form this document recommended until step 0.1 tried it — is not a loose match, it is a configuration error: `ignore_imports: A wildcard can only replace a whole module.` `*` matches one dotted segment and `**` matches any number, and `plexapi.**` does **not** cover the bare top-level `import plexapi`. Both lines are always needed.
+- **A wildcard can only replace a whole module segment.** `"shelfwarden.library.plex -> plexapi*"` — the form this document recommended until step 0.1 tried it — is not a loose match, it is a configuration error: `ignore_imports: A wildcard can only replace a whole module.` `*` matches one dotted segment and `**` matches any number.
+- **For an external package, one bare line is all that matches.** Under `include_external_packages`, grimp collapses the entire external package into a single node: `import plexapi.utils` and `from plexapi.server import PlexServer` are both recorded as `-> plexapi`. So `ignore_imports = ["shelfwarden.library.plex -> plexapi"]` — adding a `plexapi.**` line would match nothing and, per the next bullet, fail the run outright. (Submodule forms *are* needed for **internal** modules, where each is its own node.) Verified in step 0.3 by reading grimp's graph, after the two-line form recommended here broke the build.
 - **An `ignore_imports` line that matches nothing fails the run** — `No matches for ignored import ...`, exit 1, because `unmatched_ignore_imports_alerting` defaults to `error`. This is why the contracts ship with the ignore lines commented out until the module they describe actually imports the SDK. Setting the option to `warn` would silence it, at the cost of also silencing a typo'd ignore line — the two become indistinguishable. Prefer the red build: a CI failure at step 0.3 saying `shelfwarden is not allowed to import plexapi` is the contract working.
 - **`source_modules` must resolve to a real module** (`Module 'shelfwarden.agent.tools' does not exist.`, exit 1), and its descendants are all checked, so `source_modules = ["shelfwarden"]` covers the whole package and reports violations at the leaf. This is the mechanical reason the empty package skeleton is part of step 0.1: the `agent/tools/` contract cannot run until the package exists. `implementation-plan.md` §1 already asks for those seams to be "present from day one but empty".
 - **`forbidden_modules` need not exist** — neither internal nor installed. A contract stayed KEPT with `shelfwarden.agent.loop` absent, and a file containing `import openai` was caught while `openai` was not yet a dependency. So the OpenAI and Anthropic contracts are live gates from day one, before either SDK is installed.
@@ -244,7 +245,24 @@ Disable it globally via plexapi's config — `~/.config/plexapi/config.ini`:
 autoreload = false
 ```
 
-plexapi also reads config from environment variables using a `PLEXAPI_<SECTION>_<KEY>` convention (`PLEXAPI_PLEXAPI_TIMEOUT` is the verified example), so the env-var form should work here too — confirm it empirically in step 0.3 rather than assuming, and have `PlexLibrary` **assert at construction** that auto-reload is actually off rather than trusting configuration to have loaded.
+The env-var form works — `PLEXAPI_PLEXAPI_AUTORELOAD` — **but it fails open, silently, and case-sensitively.** Confirmed in step 0.3:
+
+```
+PLEXAPI_PLEXAPI_AUTORELOAD='false'  -> off      'False' -> ON, silently
+PLEXAPI_PLEXAPI_AUTORELOAD='0'      -> off      'FALSE' -> ON, silently
+                                                'no'    -> ON, silently
+```
+
+`plexapi.utils.cast` accepts only `1, True, "1", "true"` and `0, False, "0", "false"` and raises `ValueError` on anything else — but `PlexConfig.get` wraps the lookup in a **bare `except:`** that swallows the error and returns the default, which for this key is `True`. So the natural Python spelling disables nothing and warns about nothing.
+
+Two consequences, both implemented in `library/plex.py`:
+
+- **Set the value yourself, in the environment.** Environment is consulted *before* the config file, so a developer with `PLEXAPI_PLEXAPI_AUTORELOAD="False"` already exported would override a correct `config.ini` and land straight back in the fails-open case. Owning the value is the only way to win.
+- **Assert, twice.** Once on `CONFIG.get`, once on a fetched object's `_autoReload`. Reaching for a private attribute is deliberate here: the alternative is trusting a configuration path that fails open.
+
+`_autoReload` is read per object at construction, not at import, so setting it programmatically before building the server does take effect — unlike `TIMEOUT`, which `plexapi/__init__.py` binds once at import time.
+
+**Timestamps have the same shape of problem.** By default `plexapi.utils.toDatetime` returns **naive local time**: epoch `1704067200` is `2024-01-01T00:00:00Z`, but plexapi renders it as `2023-12-31 19:00` with no tzinfo on a UTC-5 machine. An export would then depend on the timezone of the machine that produced it. Call `plexapi.utils.setDatetimeTimezone("utc")` before building any object, and refuse a naive datetime at the mapping boundary rather than guessing one.
 
 Then call `reload()` explicitly with the exact includes needed:
 
@@ -277,7 +295,13 @@ Never delete. Spec §3.3: moving and renaming only, both revertible.
 
 ### 4.7 Throttling
 
-plexapi has no retry, no backoff, and no rate limiting; default timeout is 30s and any non-2xx raises immediately. `refresh()` and `analyze()` are expensive server-side (the docstring likens `analyze()` to transcoding). Our wrapper owns concurrency limits and backoff — and limits concurrent `analyze()`/`refresh()` calls specifically.
+plexapi has no retry, no backoff, and no rate limiting; default timeout is 30s and any non-2xx raises immediately.
+
+`PlexServer` accepts a `session=` argument, and `library/session.py` uses it to supply all three. It also solves a second problem: **`PlexServer.query` maps 401 to `Unauthorized`, 404 to `NotFound`, and everything else — 429, 500, 502, 503 alike — to `BadRequest`**, so retryable and terminal conditions are indistinguishable by type. The status survives only inside the message string (`"(503) service_unavailable; ..."`). A response hook on our session records it as an integer, with message parsing kept as a fallback, because a message format is a string contract the library never promised.
+
+Retries are confined to `GET`. A blanket policy is how a mutating request gets replayed by accident in Phase 3.
+
+Note also what plexapi does *not* raise: `requests` is called directly, so a connection refusal or timeout arrives as `requests.exceptions.ConnectionError`/`Timeout`, never wrapped. A boundary catching only `plexapi.exceptions.*` leaks raw `requests` types downstream — the exact leak `library/plex.py` exists to prevent. `refresh()` and `analyze()` are expensive server-side (the docstring likens `analyze()` to transcoding). Our wrapper owns concurrency limits and backoff — and limits concurrent `analyze()`/`refresh()` calls specifically.
 
 ---
 

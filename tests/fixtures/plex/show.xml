@@ -1,0 +1,9 @@
+<Directory ratingKey="2" key="/library/metadata/2/children" type="show"
+           title="The Wire" titleSort="Wire" year="2002" summary="Baltimore."
+           guid="plex://show/5d9c086c46115600200aa2fe" showOrdering="aired"
+           childCount="5" leafCount="60" studio="HBO" network="HBO"
+           contentRating="TV-MA" thumb="/library/metadata/2/thumb/1"
+           addedAt="1704067200" updatedAt="1704067200">
+  <Guid id="tvdb://79126"/>
+  <Guid id="imdb://tt0306414"/>
+</Directory>

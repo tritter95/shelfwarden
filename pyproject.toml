@@ -7,7 +7,9 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "plexapi>=4.18.2",
     "pydantic>=2.13.4",
+    "requests>=2.34.2",
     "typer>=0.27",
 ]
 
@@ -68,8 +70,9 @@ include_external_packages = true
 #
 # Two verified traps, both of which fail confusingly:
 #   * `plexapi*` is rejected -- "a wildcard can only replace a whole module". A
-#     wildcard must occupy a whole dotted segment, and `plexapi.**` does not cover
-#     the bare top-level import, so both lines are always needed.
+#     wildcard must occupy a whole dotted segment. For an EXTERNAL package one
+#     bare line is also all that matches, because grimp collapses the package to
+#     a single node; `plexapi.**` would match nothing and fail the run.
 #   * An `ignore_imports` line that matches nothing fails the run outright, which
 #     is the reason these are commented out rather than written ahead of time.
 # See docs/plans/step-0.1-scaffold.md and docs/development-practices.md §1.3.
@@ -79,33 +82,31 @@ name = "plexapi is confined to the Plex adapter"
 type = "forbidden"
 source_modules = ["shelfwarden"]
 forbidden_modules = ["plexapi"]
-# Step 0.3 adds:
-#   ignore_imports = [
-#       "shelfwarden.library.plex -> plexapi",
-#       "shelfwarden.library.plex -> plexapi.**",
-#   ]
+# Added in step 0.3, when library/plex.py first imported plexapi.
+#
+# ONE line, not two. Under include_external_packages, grimp collapses an entire
+# external package to a single top-level module: `import plexapi.utils` and
+# `from plexapi.server import PlexServer` are both recorded as `-> plexapi`. A
+# `plexapi.**` line therefore matches nothing, and an unmatched ignore fails the
+# run outright. (The submodule form IS needed for *internal* modules, where each
+# is a distinct node.)
+ignore_imports = ["shelfwarden.library.plex -> plexapi"]
 
 [[tool.importlinter.contracts]]
 name = "the OpenAI SDK is confined to its provider adapter"
 type = "forbidden"
 source_modules = ["shelfwarden"]
 forbidden_modules = ["openai"]
-# Step 1.2 adds:
-#   ignore_imports = [
-#       "shelfwarden.agent.provider.openai -> openai",
-#       "shelfwarden.agent.provider.openai -> openai.**",
-#   ]
+# Step 1.2 adds (one line -- see the note on the plexapi contract above):
+#   ignore_imports = ["shelfwarden.agent.provider.openai -> openai"]
 
 [[tool.importlinter.contracts]]
 name = "the Anthropic SDK is confined to its provider adapter"
 type = "forbidden"
 source_modules = ["shelfwarden"]
 forbidden_modules = ["anthropic"]
-# Step 1.8 adds:
-#   ignore_imports = [
-#       "shelfwarden.agent.provider.anthropic -> anthropic",
-#       "shelfwarden.agent.provider.anthropic -> anthropic.**",
-#   ]
+# Step 1.8 adds (one line -- see the note on the plexapi contract above):
+#   ignore_imports = ["shelfwarden.agent.provider.anthropic -> anthropic"]
 
 [[tool.importlinter.contracts]]
 name = "the tool layer is MCP-extractable"

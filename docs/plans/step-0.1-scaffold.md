@@ -72,15 +72,20 @@ Contract "plexapi is confined to the Plex adapter" is not configured correctly:
 ```
 
 A wildcard must occupy a whole dotted segment. `*` matches one segment, `**`
-matches any number. The working form needs **two** lines, because `plexapi.**`
-does not cover the bare top-level `plexapi`:
+matches any number.
 
 ```toml
-ignore_imports = [
-    "shelfwarden.library.plex -> plexapi",
-    "shelfwarden.library.plex -> plexapi.**",
-]
+ignore_imports = ["shelfwarden.library.plex -> plexapi"]
 ```
+
+> **Corrected in step 0.3.** This plan originally called for a second
+> `plexapi.**` line, reasoning that `**` would not cover the bare top-level
+> import. That reasoning holds for *internal* modules but not here: under
+> `include_external_packages`, grimp collapses an entire external package into a
+> single node, so `import plexapi.utils` and `from plexapi.server import
+> PlexServer` are both recorded as `-> plexapi`. The second line matched nothing
+> and — by finding 2 below — failed the build the moment the adapter landed. One
+> line for an external package; submodule forms only for internal ones.
 
 This is exactly the class of trap `development-practices.md` exists to prevent, so
 the correction goes into that document (task D) rather than only into this plan.

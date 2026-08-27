@@ -1,0 +1,6 @@
+<!-- Unmatched: no guid at all. Distinct from "not fetched" only because the
+     FetchProfile on the mapped item says FULL. -->
+<Video ratingKey="1703" key="/library/metadata/1703" type="movie"
+       title="Home Video 2003" addedAt="1704067200" updatedAt="1704067200">
+  <Media id="17" container="mp4"><Part id="18" file="/media/Movies/hv2003.mp4"/></Media>
+</Video>

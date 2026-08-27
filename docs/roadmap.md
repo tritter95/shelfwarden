@@ -44,14 +44,21 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] **Done when:** round-trip and both guid-form parsers are unit tested
 
 ### 0.3 Read-only Plex provider
-- [ ] `LibraryProvider` protocol — read methods only, no mutation in the type
-- [ ] `PlexLibrary` mapping plexapi → `NormalizedItem`; plexapi types never escape this module
-- [ ] Global `autoreload=false`; explicit `reload()` include sets
-- [ ] Paging passes **both** `container_start` and `maxresults`
-- [ ] `LibraryError` taxonomy translated at the boundary
-- [ ] Audiobook detection heuristics (section agent id, `.m4b` share, album-per-book structure)
-- [ ] Add the `plexapi` `ignore_imports` pair to the import contract — CI **will** fail on the first `import plexapi` until it is there, by design (see `plans/step-0.1-scaffold.md`)
-- [ ] **Done when:** a test asserts the protocol exposes no mutating method, and audiobook detection passes against committed fixtures
+
+> Design detail and the plexapi findings behind it: [`plans/step-0.3-plex-provider.md`](./plans/step-0.3-plex-provider.md).
+
+- [x] `LibraryProvider` protocol — read methods only, no mutation in the type; `MUTATING_METHODS` declared alongside it and asserted disjoint
+- [x] `PlexLibrary` mapping plexapi → `NormalizedItem`; plexapi types never escape this module (enforced statically by the import contract **and** dynamically by a test that walks returned values)
+- [x] Global `autoreload=false` — set in the environment by `configure_plexapi()`, not merely documented, because the switch **fails open**: only lowercase `false`/`0` work and anything else is swallowed into a permissive default. Asserted on the config and again on a fetched object
+- [x] `setDatetimeTimezone("utc")` — plexapi otherwise returns naive **local-time** datetimes, making an export depend on the machine that produced it
+- [x] Explicit `reload()` include sets, declared as data per `FetchProfile` so step 0.4's manifest can record what produced a record
+- [x] Paging passes **both** `container_start` and `maxresults`; `limit` is a required argument, and `Page.total` comes from the response rather than from `len(items)`
+- [x] `LibraryError` taxonomy translated at the boundary, carrying `Retryability` and a required `next_action` for correctable errors; covers the `requests` connection/timeout errors plexapi never wraps
+- [x] Own `requests.Session` with retry, backoff, and a status-recording hook — plexapi collapses 429/500/502/503 into `BadRequest`, so the status is otherwise available only as prose
+- [x] Audiobook detection heuristics (section agent id, `.m4b` share, album-per-book structure), returning a verdict that carries its signals, thresholds, and sample size
+- [x] Added the `plexapi` `ignore_imports` line to the import contract — CI did break on the first `import plexapi`, exactly as designed. **One** line, not the pair originally planned: grimp collapses external packages to a single node, so a `plexapi.**` line matches nothing and fails the run (correction recorded in `development-practices.md` §1.3)
+- [x] Offline fixture harness — committed XML plus a stub server whose `query()` raises, so no test can reach the network and the auto-reload guarantee is provable in CI
+- [x] **Done when:** a test asserts the protocol exposes no mutating method, and audiobook detection passes against committed fixtures
 
 ### 0.4 Library export + census
 - [ ] `shelfwarden export` → deterministic JSONL + `manifest.json`

@@ -1,0 +1,11 @@
+<!-- A real music track: short, .flac, in a lastfm-agent section. The negative
+     case for audiobook detection. -->
+<Track ratingKey="900" key="/library/metadata/900" type="track"
+       title="Teardrop" index="3" parentRatingKey="800" parentTitle="Mezzanine"
+       grandparentRatingKey="700" grandparentTitle="Massive Attack"
+       duration="330000" addedAt="1704067200" updatedAt="1704067200">
+  <Media id="19" container="flac" duration="330000">
+    <Part id="20" file="/media/Music/Massive Attack/Mezzanine/03 Teardrop.flac"
+          size="30000000" container="flac" duration="330000"/>
+  </Media>
+</Track>

@@ -1,0 +1,9 @@
+<Track ratingKey="7" key="/library/metadata/7" type="track"
+       title="Chapter 1" index="1" parentRatingKey="6" parentTitle="Words of Radiance"
+       grandparentRatingKey="5" grandparentTitle="Brandon Sanderson"
+       duration="2700000" addedAt="1704067200" updatedAt="1704067200">
+  <Media id="15" container="mp4" duration="2700000">
+    <Part id="16" file="/media/Audiobooks/Brandon Sanderson/Words of Radiance/Chapter 01.m4b"
+          size="60000000" container="mp4" duration="2700000"/>
+  </Media>
+</Track>
