@@ -32,11 +32,16 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] **Done when:** `uv run shelfwarden --help` works, a migration applies cleanly, and `lint-imports` passes in CI
 
 ### 0.2 Normalized media model
-- [ ] `NormalizedItem` + subtypes covering movie / show / season / episode / audiobook / audiobook_part
-- [ ] `ItemId` as composite `(provider, section_id, rating_key)`
-- [ ] `ExternalId` parsing for **both** new-agent `guids` (`tmdb://`, `tvdb://`, `imdb://`) and legacy `com.plexapp.agents.*` guid strings
-- [ ] Canonical-JSON round-trip
-- [ ] **Done when:** round-trip and both guid-form parsers are unit tested
+
+> Design detail, the plexapi/pydantic findings behind it, and the eight decisions taken: [`plans/step-0.2-normalized-model.md`](./plans/step-0.2-normalized-model.md).
+
+- [x] `NormalizedItem` + subtypes covering movie / show / season / episode / **author** / audiobook / audiobook_part — `author` added because `author_name_variant` and `narrator_as_author` address the Artist and record an id set to merge (correction recorded in `implementation-plan.md`)
+- [x] `ItemId` as composite `(provider, section_id, rating_key)`
+- [x] `ExternalId` parsing for **both** new-agent `guids` (`tmdb://`, `tvdb://`, `imdb://`) and legacy `com.plexapp.agents.*` guid strings, including the `thetvdb://<id>/<season>/<episode>` path form and HAMA's nested source; unrecognised guids become `UNKNOWN` with `raw` intact rather than being dropped
+- [x] Canonical-JSON round-trip — `canonical.py`, with `allow_nan=False`, NFC text normalization, and paths deliberately exempt
+- [x] `FetchProfile` on every item — "no external ids" and "nobody asked" are different facts, and with `autoreload=false` plexapi cannot tell them apart
+- [x] `with_changes` as the only mutation path — `model_copy(update=...)` does not validate
+- [x] **Done when:** round-trip and both guid-form parsers are unit tested
 
 ### 0.3 Read-only Plex provider
 - [ ] `LibraryProvider` protocol — read methods only, no mutation in the type
@@ -52,6 +57,7 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [ ] `shelfwarden export` → deterministic JSONL + `manifest.json`
 - [ ] Capture current **field lock state** (needed later for revert)
 - [ ] Emit a **census**: counts by section, agent type, media kind, container
+- [ ] Census counts guids by namespace, **including `UNKNOWN` with examples** — the legacy guid forms in step 0.2 could not be verified without a live legacy-agent library, so the real export reports which forms actually exist instead of the parser guessing
 - [ ] **Done when:** re-running the export against an unchanged library is byte-identical, and the census informs slice targets
 
 ### 0.45 Shared comparators + mechanical screen

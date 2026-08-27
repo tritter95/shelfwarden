@@ -107,6 +107,8 @@ Use `BaseModel` at **boundaries** — anything parsed from a model response, an 
 
 Do not put Pydantic in hot internal loops. Validation at every internal hop is cost without benefit; validate once at the edge and pass typed values inward.
 
+**`model_copy(update=...)` does not validate**, even on a frozen model with `extra="forbid"` and `validate_assignment=True`. It will put a `str` into an `int | None` field without complaint, and silently drop an unknown key rather than raising. This matters because it is the obvious way to write a corruption function, and the bad value would flow straight into the truth file and the snapshot. Mutate through `models.item.with_changes`, which re-validates via the type adapter; `tests/models/test_item.py` pins the difference.
+
 ### 2.2 Constraints as parse-time gates
 
 Prefer a constraint that makes an invalid state unconstructible over a check that detects it later:
@@ -142,14 +144,29 @@ For provider strict mode, the schema also needs `additionalProperties: false` an
 
 ### 2.5 Canonical serialization
 
-Determinism requirements (byte-identical exports, content-addressed evidence, `case_id` hashes) depend on one canonical serializer used everywhere:
+Determinism requirements (byte-identical exports, content-addressed evidence, `case_id` hashes) depend on one canonical serializer used everywhere. It lives in `shelfwarden/canonical.py`, from step 0.2:
 
 ```python
-def canonical_json(obj) -> bytes:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+def canonical_json(obj: object) -> bytes:
+    return json.dumps(
+        obj,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,   # REQUIRED -- see below
+    ).encode("utf-8")
 ```
 
 Sorted keys, no insignificant whitespace, stable float formatting. Never hash `str(dict)` or a default `json.dumps`.
+
+**`allow_nan=False` is not defensive, it is a bug fix.** Without it `json.dumps` emits bare `NaN`, `Infinity`, and `-Infinity`, none of which is valid JSON. Python reads them back happily, so the dataset looks fine locally and is rejected by every other parser that touches it. Plex ratings are floats, so this is reachable. Fail at write time.
+
+Two policy decisions the serializer cannot make for you, both verified to change the bytes:
+
+- **Unicode normalization.** `"Amélie"` composed and decomposed are the same string to a reader and different bytes to a hash. Both forms genuinely arrive: macOS filesystems hand out NFD, and `part.file` comes from the filesystem. Normalize human-readable text to **NFC at the model boundary** (`canonical_text`), and deliberately **do not** normalize file paths — a path is an argument to a future filesystem operation, Phase 3 renames real files, and an NFC-normalized NFD path may name nothing on disk. Where a path needs comparing rather than opening, normalize at the comparison site, visibly.
+- **Numeric type stability.** `8` and `8.0` serialize differently. A field that is sometimes int and sometimes float breaks byte-identity without changing value, so field types have to be pinned in the model rather than inferred from whatever Plex returned.
+
+And one that bites the moment a timestamp appears: **datetimes serialize by representation, not by instant.** `2024-01-01T05:00:00Z` and `2024-01-01T00:00:00-05:00` are the same moment and different bytes; a naive datetime produces a third form with no offset. Coerce to aware UTC at parse time (`models.item.UtcDatetime`) or byte-identical export becomes a function of the server's timezone setting.
 
 ---
 
