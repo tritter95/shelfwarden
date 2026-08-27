@@ -56,7 +56,7 @@ Module ownership is single-purpose and stated in `implementation-plan.md` §1. T
 
 ### 1.3 Import contracts
 
-`[tool.importlinter]` in `pyproject.toml`, from step 0.1 — not later. Three contracts:
+`[tool.importlinter]` in `pyproject.toml`, from step 0.1 — not later. Five contracts, live in CI as of step 0.1: `plexapi` confined to `library/plex.py`, `openai` and `anthropic` each confined to their provider adapter, `agent/tools/` unable to import `agent.loop` / `agent.provider` / `evals`, and `library/` + `sources/` unable to import `agent/` (the §1.2 MCP boundary, in both directions).
 
 ```toml
 [tool.importlinter]
@@ -68,17 +68,24 @@ name = "plexapi is confined to the Plex adapter"
 type = "forbidden"
 source_modules = ["shelfwarden"]
 forbidden_modules = ["plexapi"]
-ignore_imports = ["shelfwarden.library.plex -> plexapi*"]
+# Added in step 0.3, when library/plex.py first imports plexapi -- not before:
+#   ignore_imports = [
+#       "shelfwarden.library.plex -> plexapi",
+#       "shelfwarden.library.plex -> plexapi.**",
+#   ]
 ```
 
-...and equivalents for `openai`/`anthropic` (confined to their provider modules) and for `agent/tools/` (may not import `agent.loop`, `agent.provider`, or `evals`).
+**Five things verified by actually running this** (import-linter 2.13 / grimp 3.15), every one of which fails confusingly otherwise:
 
-Two things verified by actually running this, both of which fail confusingly otherwise:
+- **`include_external_packages = true` is mandatory here.** Three of the contracts forbid *external* packages, and without this flag import-linter refuses to run at all: `"The top level configuration must have include_external_packages=True when there are external forbidden modules."`
+- **A wildcard can only replace a whole module segment.** `"shelfwarden.library.plex -> plexapi*"` — the form this document recommended until step 0.1 tried it — is not a loose match, it is a configuration error: `ignore_imports: A wildcard can only replace a whole module.` `*` matches one dotted segment and `**` matches any number, and `plexapi.**` does **not** cover the bare top-level `import plexapi`. Both lines are always needed.
+- **An `ignore_imports` line that matches nothing fails the run** — `No matches for ignored import ...`, exit 1, because `unmatched_ignore_imports_alerting` defaults to `error`. This is why the contracts ship with the ignore lines commented out until the module they describe actually imports the SDK. Setting the option to `warn` would silence it, at the cost of also silencing a typo'd ignore line — the two become indistinguishable. Prefer the red build: a CI failure at step 0.3 saying `shelfwarden is not allowed to import plexapi` is the contract working.
+- **`source_modules` must resolve to a real module** (`Module 'shelfwarden.agent.tools' does not exist.`, exit 1), and its descendants are all checked, so `source_modules = ["shelfwarden"]` covers the whole package and reports violations at the leaf. This is the mechanical reason the empty package skeleton is part of step 0.1: the `agent/tools/` contract cannot run until the package exists. `implementation-plan.md` §1 already asks for those seams to be "present from day one but empty".
+- **`forbidden_modules` need not exist** — neither internal nor installed. A contract stayed KEPT with `shelfwarden.agent.loop` absent, and a file containing `import openai` was caught while `openai` was not yet a dependency. So the OpenAI and Anthropic contracts are live gates from day one, before either SDK is installed.
 
-- **`include_external_packages = true` is mandatory here.** All three contracts forbid *external* packages, and without this flag import-linter refuses to run at all: `"The top level configuration must have include_external_packages=True when there are external forbidden modules."`
-- **`lint-imports` needs the package importable**, so it fails with `"Could not find package 'shelfwarden' in your Python path"` until `uv sync` has installed the project. That is a "cannot run" condition, not a contract breach — the practices hook distinguishes the two deliberately (see §10).
+And one operational note: **`lint-imports` needs the package importable**, so it fails with `"Could not find package 'shelfwarden' in your Python path"` until `uv sync` has installed the project. That is a "cannot run" condition, not a contract breach — the practices hook distinguishes the two deliberately (see §10).
 
-These turn three claims the plan makes — "plexapi types never escape `library/plex.py`", "provider SDK types don't spread", "the tool layer is extractable" — from intentions into CI failures. `lint-imports` runs in CI alongside `ruff` and `pytest`. Adding these on day one costs minutes; adding them in Phase 5 means discovering the seam already leaked.
+These turn four claims the plan makes — "plexapi types never escape `library/plex.py`", "provider SDK types don't spread", "the tool layer is extractable", and "`library/` and `sources/` are the MCP boundary" — from intentions into CI failures. `lint-imports` runs in CI alongside `ruff` and `pytest`, as its own named step. Adding these on day one costs minutes; adding them in Phase 5 means discovering the seam already leaked.
 
 ### 1.4 Style
 
@@ -382,6 +389,12 @@ The read-only registry test is the structural guarantee behind spec §3.2 and mu
 `pytest-asyncio` in `asyncio_mode = "auto"`. Set `asyncio_default_fixture_loop_scope` explicitly to avoid the deprecation warning and pin fixture loop semantics.
 
 ### 8.4 CI gating
+
+`.github/workflows/ci.yml`, from step 0.1. The `check` job runs on every push and pull request: `uv sync --locked` (which fails rather than silently re-resolving when `uv.lock` is stale), then `ruff check`, `ruff format --check`, `lint-imports`, `pytest -m "not slow"`, and two CLI smoke steps — `--help`/`--version`, and a migration applied to a fresh database. Each is a separately named step so a red build names the failure without anyone opening the log. A `nightly` job on a cron schedule runs the suite without the `-m` filter.
+
+`slow` and `live` are registered markers, and `--strict-markers` is on: a typo'd marker is an error, not a silent no-op. That matters most for `live`, where a mistyped skip marker is a test that quietly starts calling a real API. `filterwarnings = ["error"]` was turned on while the suite was still small and warning-free — the expensive order is the other one.
+
+CI needs no secrets and touches nothing external, per §8.1. The relative-change eval gate below is blocked on the scorer (step 0.8); a stub that always passes would be worse than its absence.
 
 Fast suite on every commit; full suite nightly. Gate on **relative** change — no case that passed may now fail — with a four-bucket case-level diff (`regressed` / `fixed` / `new` / `changed`), not an aggregate.
 

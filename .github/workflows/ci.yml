@@ -1,0 +1,89 @@
+# The step-0.1 gate, mechanized: the CLI is invocable, a migration applies, the
+# architectural seams hold, and the suite is green. CI is the gate --
+# .claude/hooks/py-check.sh is only the fast local feedback loop.
+#
+# Nothing here touches a live external API, and nothing here needs a secret.
+# See docs/development-practices.md §8.1 and §8.4.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 7 * * *" # nightly full suite
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: lint, contracts, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # No actions/setup-python step: uv provisions the interpreter from
+      # .python-version itself.
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # --locked fails if uv.lock is out of date rather than silently resolving
+      # something other than what is committed.
+      - name: install
+        run: uv sync --locked --group dev
+
+      - name: ruff lint
+        run: uv run ruff check .
+
+      - name: ruff format
+        run: uv run ruff format --check .
+
+      # The architectural seams are a CI failure, not a convention:
+      # plexapi and the provider SDKs stay in their adapters, agent/tools stays
+      # MCP-extractable, library/ and sources/ stay free of agent/.
+      # docs/development-practices.md §1.3.
+      - name: import contracts
+        run: uv run lint-imports
+
+      - name: tests
+        run: uv run pytest -q -m "not slow"
+
+      # Each gate command is its own step so a red build names the failure
+      # without anyone opening the log.
+      - name: cli is invocable
+        run: |
+          uv run shelfwarden --help
+          uv run shelfwarden --version
+
+      - name: migrations apply to a fresh database
+        run: |
+          uv run shelfwarden --db "${RUNNER_TEMP}/ci.db" db migrate
+          uv run shelfwarden --db "${RUNNER_TEMP}/ci.db" db status
+          uv run shelfwarden --db "${RUNNER_TEMP}/ci.db" db migrate
+
+  nightly:
+    name: full suite
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: install
+        run: uv sync --locked --group dev
+
+      # No -m filter: slow cases run here and nowhere else.
+      - name: tests (including slow)
+        run: uv run pytest -q

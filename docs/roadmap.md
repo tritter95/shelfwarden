@@ -13,17 +13,23 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 > **Gate:** `python -m shelfwarden.evals.generate --count 200` produces a labeled dataset, and a trivial scorer can compare any proposed repair set against the truth file.
 
 ### 0.1 Project scaffold
+
+> Design detail and the verified import-linter findings behind the contracts: [`plans/step-0.1-scaffold.md`](./plans/step-0.1-scaffold.md).
+
 - [x] `uv init`, `.python-version` → 3.13, `src/` layout, `[project.scripts]`
 - [x] Typer CLI skeleton — `scan / diff / apply / revert / eval / export`
 - [x] SQLite store: WAL, explicit `autocommit=False`, migration runner
-- [~] pytest + pytest-asyncio (`asyncio_mode="auto"`), ruff **configured and passing**; CI workflow still to do
-- [ ] **`[tool.importlinter]` contracts** — enforce the architectural seams in CI from day one:
-  - [ ] `include_external_packages = true` (**required** — import-linter refuses to run without it when forbidden modules are external)
-  - [ ] `agent/tools/` must not import `agent/loop.py`, `agent/provider/`, or `evals/` (Phase 5 MCP seam)
-  - [ ] `library/plex.py` is the only module permitted to import `plexapi`
-  - [ ] the provider modules are the only ones permitted to import their respective SDKs
+- [x] Empty package skeleton per `implementation-plan.md` §1 — the Phase 2–5 seams present from day one (and a hard prerequisite: an import contract's `source_modules` must resolve to a real module)
+- [x] pytest + pytest-asyncio (`asyncio_mode="auto"`, exercised by a test), ruff **configured and passing**, `--strict-markers`, `filterwarnings = ["error"]`, `slow`/`live` markers registered
+- [x] CI workflow — `.github/workflows/ci.yml`: fast `check` job per push/PR, `nightly` full suite on cron
+- [x] **`[tool.importlinter]` contracts** — enforce the architectural seams in CI from day one:
+  - [x] `include_external_packages = true` (**required** — import-linter refuses to run without it when forbidden modules are external)
+  - [x] `agent/tools/` must not import `agent/loop.py`, `agent/provider/`, or `evals/` (Phase 5 MCP seam)
+  - [x] `library/plex.py` is the only module permitted to import `plexapi`
+  - [x] the provider modules are the only ones permitted to import their respective SDKs
+  - [x] `library/` and `sources/` must not import `agent/` — the same MCP boundary in the other direction (`development-practices.md` §1.2)
 - [x] **Practices enforcement hook** — `.claude/hooks/py-check.sh` + `.claude/settings.json` (active; no-ops until scaffolded)
-- [ ] **Done when:** `uv run shelfwarden --help` works, a migration applies cleanly, and `lint-imports` passes in CI
+- [x] **Done when:** `uv run shelfwarden --help` works, a migration applies cleanly, and `lint-imports` passes in CI
 
 ### 0.2 Normalized media model
 - [ ] `NormalizedItem` + subtypes covering movie / show / season / episode / audiobook / audiobook_part
@@ -39,6 +45,7 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [ ] Paging passes **both** `container_start` and `maxresults`
 - [ ] `LibraryError` taxonomy translated at the boundary
 - [ ] Audiobook detection heuristics (section agent id, `.m4b` share, album-per-book structure)
+- [ ] Add the `plexapi` `ignore_imports` pair to the import contract — CI **will** fail on the first `import plexapi` until it is there, by design (see `plans/step-0.1-scaffold.md`)
 - [ ] **Done when:** a test asserts the protocol exposes no mutating method, and audiobook detection passes against committed fixtures
 
 ### 0.4 Library export + census
@@ -156,6 +163,7 @@ Detectability (no case ships unproven)
 - [ ] Provider-opaque `ProviderCarryover` for reasoning/thinking replay
 - [ ] OpenAI **Responses API** implementation
 - [ ] Pydantic `$ref`/`$defs` inliner for tool schemas
+- [ ] Add the `openai` `ignore_imports` pair to the import contract (both `openai` and `openai.**` — a bare wildcard is rejected)
 - [ ] **Done when:** a proposal round-trips with `raw` bytes stored verbatim
 
 ### 1.3 Tool registry + read-only tools
@@ -210,6 +218,7 @@ Validator checks
 ### 1.8 Second provider
 - [ ] Anthropic Messages implementation behind the same interface
 - [ ] Per-case result diff between providers
+- [ ] Add the `anthropic` `ignore_imports` pair to the import contract
 - [ ] **Done when:** the same suite runs against both and the diff is reported
 
 ---

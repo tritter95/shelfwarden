@@ -3,7 +3,7 @@ name = "shelfwarden"
 version = "0.1.0"
 description = "An agentic media library steward for Plex"
 authors = [
-    { name = "“Todd", email = "159606618+wsventures@users.noreply.github.com" }
+    { name = "Todd", email = "321231505+tritter95@users.noreply.github.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
@@ -41,10 +41,83 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# --strict-markers turns a typo'd marker into an error rather than a silent no-op,
+# which matters most for `live`: a mistyped skip marker is a test that quietly
+# starts calling a real API. --strict-config does the same for this table.
+addopts = "--strict-markers --strict-config"
+xfail_strict = true
+# Turned on while the suite is small and warning-free. The expensive order is the
+# other one -- switching this on after warnings have accumulated.
+filterwarnings = ["error"]
+markers = [
+    "slow: excluded from the per-commit suite; runs nightly (practices §8.4)",
+    "live: touches a real external service; never runs in CI (practices §8.1)",
+]
 
 [tool.importlinter]
 root_package = "shelfwarden"
+# REQUIRED: import-linter refuses to run at all when a contract forbids an
+# external module and this is unset.
 include_external_packages = true
-# Contracts land in roadmap step 0.1 feature 5. include_external_packages is
-# required there (import-linter refuses to run without it when forbidden
-# modules are external) and is set now so the block is never added without it.
+
+# These contracts deliberately carry no `ignore_imports` yet. Nothing imports
+# plexapi, openai, or anthropic, so the strict form is honest -- and the first
+# import that lands outside its adapter breaks CI at exactly the step that
+# introduces it. The lines to add then are recorded per contract below.
+#
+# Two verified traps, both of which fail confusingly:
+#   * `plexapi*` is rejected -- "a wildcard can only replace a whole module". A
+#     wildcard must occupy a whole dotted segment, and `plexapi.**` does not cover
+#     the bare top-level import, so both lines are always needed.
+#   * An `ignore_imports` line that matches nothing fails the run outright, which
+#     is the reason these are commented out rather than written ahead of time.
+# See docs/plans/step-0.1-scaffold.md and docs/development-practices.md §1.3.
+
+[[tool.importlinter.contracts]]
+name = "plexapi is confined to the Plex adapter"
+type = "forbidden"
+source_modules = ["shelfwarden"]
+forbidden_modules = ["plexapi"]
+# Step 0.3 adds:
+#   ignore_imports = [
+#       "shelfwarden.library.plex -> plexapi",
+#       "shelfwarden.library.plex -> plexapi.**",
+#   ]
+
+[[tool.importlinter.contracts]]
+name = "the OpenAI SDK is confined to its provider adapter"
+type = "forbidden"
+source_modules = ["shelfwarden"]
+forbidden_modules = ["openai"]
+# Step 1.2 adds:
+#   ignore_imports = [
+#       "shelfwarden.agent.provider.openai -> openai",
+#       "shelfwarden.agent.provider.openai -> openai.**",
+#   ]
+
+[[tool.importlinter.contracts]]
+name = "the Anthropic SDK is confined to its provider adapter"
+type = "forbidden"
+source_modules = ["shelfwarden"]
+forbidden_modules = ["anthropic"]
+# Step 1.8 adds:
+#   ignore_imports = [
+#       "shelfwarden.agent.provider.anthropic -> anthropic",
+#       "shelfwarden.agent.provider.anthropic -> anthropic.**",
+#   ]
+
+[[tool.importlinter.contracts]]
+name = "the tool layer is MCP-extractable"
+type = "forbidden"
+source_modules = ["shelfwarden.agent.tools"]
+forbidden_modules = [
+    "shelfwarden.agent.loop",
+    "shelfwarden.agent.provider",
+    "shelfwarden.evals",
+]
+
+[[tool.importlinter.contracts]]
+name = "library and sources do not import the agent"
+type = "forbidden"
+source_modules = ["shelfwarden.library", "shelfwarden.sources"]
+forbidden_modules = ["shelfwarden.agent"]

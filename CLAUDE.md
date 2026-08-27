@@ -14,6 +14,7 @@ An agentic media library steward. It audits a Plex library, diagnoses metadata a
 | `docs/development-practices.md` | Stack conventions and verified library traps. **Read the relevant section before writing code.** |
 | `docs/implementation-plan.md` | Phase 0 + 1 design detail: architecture, schemas, gated build steps |
 | `docs/roadmap.md` | Checkable progress across all phases. Update it as work lands. |
+| `docs/plans/` | Per-step implementation plans, and the verified findings behind them |
 
 ---
 
