@@ -30,7 +30,9 @@ jobs:
 
       # No actions/setup-python step: uv provisions the interpreter from
       # .python-version itself.
-      - uses: astral-sh/setup-uv@v10
+      # Pinned exactly: astral-sh/setup-uv publishes floating major tags only
+      # through v7, so `@v10` does not resolve even though v10.0.1 is current.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -76,7 +78,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v10
+      # Pinned exactly: astral-sh/setup-uv publishes floating major tags only
+      # through v7, so `@v10` does not resolve even though v10.0.1 is current.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock

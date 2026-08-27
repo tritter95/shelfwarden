@@ -394,6 +394,8 @@ The read-only registry test is the structural guarantee behind spec §3.2 and mu
 
 `slow` and `live` are registered markers, and `--strict-markers` is on: a typo'd marker is an error, not a silent no-op. That matters most for `live`, where a mistyped skip marker is a test that quietly starts calling a real API. `filterwarnings = ["error"]` was turned on while the suite was still small and warning-free — the expensive order is the other one.
 
+Pin third-party actions to a tag that actually exists. `astral-sh/setup-uv` publishes floating major tags only through `v7`, so `@v10` fails to resolve — `Unable to resolve action astral-sh/setup-uv@v10` — even though `v10.0.1` is the current release. Reading a repository's latest release tag is not evidence that the matching floating major exists; check `git/matching-refs/tags` before writing a major-only reference, or pin the exact version.
+
 CI needs no secrets and touches nothing external, per §8.1. The relative-change eval gate below is blocked on the scorer (step 0.8); a stub that always passes would be worse than its absence.
 
 Fast suite on every commit; full suite nightly. Gate on **relative** change — no case that passed may now fail — with a four-bucket case-level diff (`regressed` / `fixed` / `new` / `changed`), not an aggregate.
