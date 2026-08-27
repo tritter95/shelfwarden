@@ -583,8 +583,10 @@ uv run shelfwarden --db "$(mktemp -d)/ci.db" db migrate   # Applied 1 migration(
 ```
 
 - [x] All six commands pass locally
-- [ ] The same six run in GitHub Actions on a pull request, as separately named
-      steps — **the one item that cannot be verified locally**; it needs a push
+- [x] The same six run in GitHub Actions, as separately named steps — green on
+      run 33028849389, after one correction: `astral-sh/setup-uv@v10` did not
+      resolve, because that action publishes floating major tags only through v7
+      (see `development-practices.md` §8.4)
 - [x] Each contract has been seen to break once, deliberately, and then restored —
       all five reported BROKEN together, exit 1, then `5 kept, 0 broken` after revert
 - [x] `development-practices.md` §1.3 contains no example that fails when pasted
