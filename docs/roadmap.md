@@ -1,6 +1,6 @@
 # ShelfWarden Roadmap
 
-Progress tracker for the build order in [`shelfwarden.md`](./shelfwarden.md). Design detail for Phases 0–1 lives in [`implementation-plan.md`](./implementation-plan.md); stack conventions and verified library traps live in [`development-practices.md`](./development-practices.md).
+Progress tracker for the build order in [`shelfwarden.md`](./shelfwarden.md). System structure and diagrams live in [`architecture.md`](./architecture.md). Design detail for Phases 0–1 lives in [`implementation-plan.md`](./implementation-plan.md); stack conventions and verified library traps live in [`development-practices.md`](./development-practices.md).
 
 **Gating rule (from the spec): do not begin a phase until the previous phase's gate is met.**
 

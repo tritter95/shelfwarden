@@ -10,6 +10,7 @@ An agentic media library steward. It audits a Plex library, diagnoses metadata a
 
 | File | What it is |
 |---|---|
+| `docs/architecture.md` | How the system fits together, with diagrams. **Start here to orient.** |
 | `docs/shelfwarden.md` | The spec. **Decisions in §3 are settled — do not relitigate them during implementation.** |
 | `docs/development-practices.md` | Stack conventions and verified library traps. **Read the relevant section before writing code.** |
 | `docs/implementation-plan.md` | Phase 0 + 1 design detail: architecture, schemas, gated build steps |
