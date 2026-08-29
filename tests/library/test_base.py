@@ -32,6 +32,7 @@ def test_the_protocol_exposes_no_mutating_method():
 def test_the_protocol_still_declares_the_reads_it_should():
     """So the test above cannot pass by the protocol being empty."""
     assert protocol_methods(LibraryProvider) == {
+        "provider_info",
         "sections",
         "list_items",
         "get_item",

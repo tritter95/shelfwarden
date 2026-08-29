@@ -65,6 +65,7 @@ flowchart TB
 
     subgraph core["vocabulary — no dependencies but stdlib + pydantic"]
         CANON["canonical.py<br/><i>the one serializer</i>"]
+        CONFIG["config.py<br/><i>settings · secrets</i>"]
         IDS["models/ids.py<br/><i>ItemId · ExternalId · guid ladder</i>"]
         ITEM["models/item.py<br/><i>NormalizedItem · 7 kinds</i>"]
     end
@@ -87,7 +88,8 @@ flowchart TB
     end
 
     subgraph measurement["measurement — Phase 0, the deliverable"]
-        EXPORT["evals/export.py<br/><i>planned 0.4</i>"]
+        EXPORT["evals/export.py<br/><i>the deterministic slice</i>"]
+        CENSUS["evals/census.py<br/><i>two tiers, each labelled</i>"]
         CORRUPT["evals/corrupt/<br/><i>planned 0.5</i>"]
         TRUTH["evals/truth.py<br/><i>planned 0.6</i>"]
         SCORE["evals/score.py<br/><i>planned 0.8 — the gate</i>"]
@@ -112,14 +114,17 @@ flowchart TB
     LOOP -.planned.-> GUARD
     TOOLS -.planned.-> LBASE
     TOOLS -.planned.-> SOURCES
-    EXPORT -.planned.-> LBASE
+    EXPORT --> LBASE
+    EXPORT --> CENSUS
+    EXPORT --> CONFIG
+    CLI --> EXPORT
     CORRUPT -.planned.-> ITEM
     SCORE -.planned.-> TRUTH
 
     classDef done fill:#1f6f43,stroke:#0d3b24,color:#fff
     classDef plan fill:#2b2b2b,stroke:#666,color:#bbb,stroke-dasharray:4 3
-    class CLI,CANON,IDS,ITEM,LBASE,PLEX,SESSION,AUDIO,DB done
-    class SNAP,SOURCES,LOOP,TOOLS,PROV,GUARD,VALID,EXPORT,CORRUPT,TRUTH,SCORE plan
+    class CLI,CANON,CONFIG,IDS,ITEM,LBASE,PLEX,SESSION,AUDIO,DB,EXPORT,CENSUS done
+    class SNAP,SOURCES,LOOP,TOOLS,PROV,GUARD,VALID,CORRUPT,TRUTH,SCORE plan
 ```
 
 Solid = built. Dashed = planned, with the roadmap step named.
@@ -179,7 +184,7 @@ downstream is measured against it.
 flowchart LR
     PLEX[("Plex<br/>library")]
     EXPORT["export<br/><i>0.4</i>"]
-    GROUND[("ground truth<br/>JSONL + manifest")]
+    GROUND[("ground truth<br/>items.jsonl + manifest<br/>+ census")]
     SCREEN["mechanical screen<br/><i>0.45</i>"]
     CORRUPT["corruption functions<br/><i>0.5 — 15 classes</i>"]
     WITNESS{"detectability<br/>witness"}
@@ -225,6 +230,39 @@ coverage gap rather than a mysteriously low score.
 must equal the ground-truth item byte-for-byte under the canonical serializer. This
 is why `NormalizedItem` is frozen and why `with_changes` is the only mutation path:
 a corruption that mutated in place could lose its own audit trail.
+
+### The export, and the two things it refuses to do
+
+The export is the step that turns a live, mutable, network-dependent server into a
+file that does not change. It writes one directory — `items.jsonl`, `manifest.json`,
+`census.json`, `census.md` — built in a temp directory and moved into place with a
+single `os.replace`, so an interrupted run leaves nothing rather than something
+plausible.
+
+Two refusals shape it more than any feature does.
+
+**It will not half-write a family.** The unit of selection is a root plus every
+descendant: show → seasons → episodes, author → audiobooks → parts. `--count`
+counts *roots*, and a family that would push past `--max-records` is dropped whole
+and recorded in `manifest.dropped`, never truncated. A show missing its last four
+episodes is an unsolvable case for `episode_wrong_season` and a mysteriously
+depressed score in 0.8 — the same failure the detectability witness exists to
+prevent, arriving one step earlier.
+
+**It will not write a partial export that looks complete.** A member that vanishes
+mid-walk drops its family, with the reason recorded. An unsupported section is
+skipped with the audiobook verdict's own explanation attached, so the refusal can
+be argued with. But a `LibraryUnavailable` that survives the session's retries
+aborts the whole run and writes nothing at all.
+
+The census is deliberately **two tiers with two bases**, because conflating them
+makes the numbers unfalsifiable. Population is exact, from the listing walk. The
+slice tier — guid namespaces, containers, lock state — comes from records actually
+fetched and carries `coverage: {records, population}` on every block. Its
+`readiness` table counts *structural candidates* for each problem class and is
+flagged `advisory: true` on every row: it does not verify that any item is free of
+a problem. That is the mechanical screen in 0.45, and reading a readiness count as
+a `no_action` label would make the should-not-touch slice unfalsifiable.
 
 ---
 
@@ -470,7 +508,7 @@ step of every run.
 
 Determinism is not a nice property here; the export's own test is that re-running
 it against an unchanged library is byte-identical, and content-addressed evidence
-and semantic case ids both reduce to hashing. Five things had to be pinned, each
+and semantic case ids both reduce to hashing. Seven things had to be pinned, each
 because it was verified to change the bytes:
 
 | Hazard | Resolution |
@@ -480,6 +518,8 @@ because it was verified to change the bytes:
 | `8` and `8.0` serialize differently | Field types pinned in the model, not inferred |
 | Datetimes serialize by representation, not instant | Coerced to aware UTC; naive values rejected |
 | plexapi returns guids in XML order | Sorted at construction; stored as tuples |
+| `Counter.most_common()` and `set` iteration order are hash-seed dependent | Every aggregation sorted by an explicit total order — count descending, then key ascending — and the determinism test forks with `PYTHONHASHSEED` 0 and 1, since one process cannot see this at all |
+| `canonical_json` sorts mapping keys, so a count-ordered dict does not survive the round trip | Ordering a human reads is re-derived when `census.md` is rendered, never inherited from the stored dict |
 
 The plexapi layer contributed two more, both of which **fail open** — the library's
 config helpers prefer a permissive default to an error:
@@ -508,10 +548,16 @@ flowchart LR
         CASS["vcrpy cassettes<br/><i>planned 1.1</i>"]
         RESPX["respx error paths<br/><i>planned 1.1</i>"]
     end
+    subgraph offline2["offline — the export's own gate"]
+        FAKE["FakeLibrary<br/><i>in-memory LibraryProvider</i>"]
+        FORK["forked runs<br/><i>PYTHONHASHSEED 0 vs 1</i>"]
+    end
     XML --> BUILD["plexapi objects,<br/>built with no server"]
     STUB --> BUILD
     BUILD --> MAP["mapping tests"]
     STUB --> TRIP["auto-reload tripwire"]
+    FAKE --> BYTES["byte-identity"]
+    FORK --> BYTES
 
     classDef plan fill:#2b2b2b,stroke:#666,color:#bbb,stroke-dasharray:4 3
     class CASS,RESPX plan
@@ -528,6 +574,14 @@ Static and dynamic confinement checks catch different mistakes: `lint-imports`
 proves no *module* imports plexapi; a runtime walk over returned values proves no
 plexapi *object* escapes through a return.
 
+The export's gate needs a second fixture of its own. `FakeLibrary` implements
+`LibraryProvider` and nothing else, which is the point: if the export ever reaches
+for something only `PlexLibrary` has, those tests stop importing rather than
+quietly binding the export to the adapter — the runtime companion to the
+`evals` → `library.plex` import contract. And byte-identity is asserted twice,
+once in-process and once across two forked runs with different `PYTHONHASHSEED`
+values, because a single-process comparison cannot see hash-order leakage at all.
+
 ---
 
 ## 13. Current state
@@ -537,7 +591,7 @@ plexapi *object* escapes through a return.
 | 0.1 Scaffold | ✅ | 5 import contracts, CI, package skeleton, migration runner |
 | 0.2 Normalized model | ✅ | 7 media kinds, guid ladder, canonical serializer |
 | 0.3 Read-only provider | ✅ | `LibraryProvider`, `PlexLibrary`, session, audiobook detection |
-| 0.4 Export + census | ⬜ | Deterministic JSONL, lock state, census incl. unknown guids |
+| 0.4 Export + census | ✅ | Deterministic `items.jsonl` + manifest, lock state, part ids, two-tier census incl. unknown guids, `provider_info()`, 6th import contract |
 | 0.45 Comparators + screen | ⬜ | Shared comparator library; LLM-free verification |
 | 0.5 Corruption functions | ⬜ | 15 problem classes, each with a detectability witness |
 | 0.6 Truth schema + generator | ⬜ | Semantic case ids, composition config |
@@ -546,7 +600,7 @@ plexapi *object* escapes through a return.
 | Phase 1 | ⬜ | Sources, provider interface, tools, validator, loop, eval runner |
 | Phase 2–5 | ⬜ | Guard chain, replay, repair stage, LangGraph, MCP + Temporal |
 
-2,143 lines of source, 1,477 of tests, 224 tests, all offline.
+3,909 lines of source, 3,398 of tests, 393 tests, all offline.
 
 **Phases are gated.** Do not begin one until the previous gate is met — the gate
 text is in [`roadmap.md`](./roadmap.md).

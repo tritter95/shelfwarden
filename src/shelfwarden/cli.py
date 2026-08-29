@@ -6,13 +6,19 @@ the `db` subcommands are real at this point.
 """
 
 from dataclasses import dataclass
-from enum import IntEnum
+from datetime import UTC, datetime
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
 
 from shelfwarden import __version__
+from shelfwarden.config import ConfigError, load_settings, require_plex
+from shelfwarden.evals import export as export_module
+from shelfwarden.library.base import LibraryError
+from shelfwarden.library.plex import PlexLibrary, effective_request_params
+from shelfwarden.models.item import FetchProfile
 from shelfwarden.store import db as store_db
 
 
@@ -24,6 +30,26 @@ class ExitCode(IntEnum):
     # 2 is Click's own usage-error code -- do not reuse it.
     FINDINGS = 3
     NOT_IMPLEMENTED = 4
+
+
+class ExportProfile(StrEnum):
+    """What `--profile` may be set to.
+
+    Deliberately not `FetchProfile` itself. That enum has a third member, `STUB`,
+    which marks a record that came from a *listing* -- it is something the export
+    observes, never something an operator can ask the server for. Offering it in
+    `--help` would advertise a choice that cannot work.
+
+    CORE is the default: FULL differs by `checkFiles=1` alone, which maps to no
+    field this model carries and costs a server-side stat per part. See
+    docs/plans/step-0.4-export-census.md, Decision 2.
+    """
+
+    CORE = "core"
+    FULL = "full"
+
+    def fetch_profile(self) -> FetchProfile:
+        return FetchProfile(self.value)
 
 
 @dataclass(frozen=True)
@@ -87,10 +113,104 @@ def main(
 @app.command()
 def export(
     ctx: typer.Context,
-    count: Annotated[int, typer.Option("--count", help="Items to export.")] = 200,
+    count: Annotated[
+        int,
+        typer.Option("--count", help="Root items (movies, shows, authors) to export."),
+    ] = export_module.DEFAULT_ROOTS,
+    all_items: Annotated[
+        bool, typer.Option("--all", help="Export every root item. Overrides --count.")
+    ] = False,
+    seed: Annotated[
+        int, typer.Option("--seed", help="Seed for the slice selection.")
+    ] = export_module.DEFAULT_SEED,
+    max_records: Annotated[
+        int,
+        typer.Option(
+            "--max-records",
+            help="Record ceiling. A family that would exceed it is dropped whole, never truncated.",
+        ),
+    ] = export_module.DEFAULT_MAX_RECORDS,
+    sections: Annotated[
+        list[str] | None,
+        typer.Option("--section", help="Restrict to these section ids. Repeatable."),
+    ] = None,
+    profile: Annotated[
+        ExportProfile, typer.Option("--profile", help="How much to ask the server for.")
+    ] = ExportProfile.CORE,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Export directory. Defaults to a timestamped one.")
+    ] = None,
+    census_only: Annotated[
+        bool,
+        typer.Option(
+            "--census-only",
+            help="Count the library without fetching items. Run this first to choose --count.",
+        ),
+    ] = False,
 ) -> None:
-    """Export a slice of the Plex library as ground truth."""
-    _not_implemented("export", "0.4", "library export + census")
+    """Export a slice of the Plex library as ground truth.
+
+    Re-running this against an unchanged library produces byte-identical items.
+    Note that "unchanged" is stronger than it sounds: Plex moves rating keys on
+    rescan and bumps `updated_at` on a background metadata refresh, so a diff here
+    is information about the server rather than a failure.
+    """
+    settings = load_settings()
+    try:
+        baseurl, token = require_plex(settings)
+    except ConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    now = datetime.now(UTC)
+    directory = out or export_module.default_directory(settings.export_dir, now)
+    fetch_profile = profile.fetch_profile()
+
+    try:
+        provider = PlexLibrary(baseurl, token)
+        result = export_module.run_export(
+            provider,
+            directory,
+            profile=fetch_profile,
+            request_params=effective_request_params(fetch_profile),
+            count=None if all_items else count,
+            seed=seed,
+            max_records=max_records,
+            sections=tuple(sections or ()),
+            census_only=census_only,
+            secrets=settings.secrets,
+            now=now,
+        )
+    except (export_module.ExportError, LibraryError) as exc:
+        typer.echo(f"Export failed, nothing written: {exc}", err=True)
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    _report_export(result, census_only=census_only)
+
+
+def _report_export(result: export_module.ExportResult, *, census_only: bool) -> None:
+    manifest = result.manifest
+    typer.echo(f"Wrote {result.directory}")
+    for section in manifest.sections:
+        typer.echo(
+            f"  section {section.section_id} {section.title!r}: "
+            f"{section.population} root item(s), "
+            f"{section.exported_roots} exported ({section.exported_records} records)"
+        )
+    for skipped in manifest.skipped_sections:
+        typer.echo(f"  skipped {skipped.section_id} {skipped.title!r}: {skipped.reason}")
+    # Every drop is reported. A silently truncated export reads as full coverage.
+    for dropped in manifest.dropped:
+        typer.echo(f"  dropped {dropped.title!r} ({dropped.records} records): {dropped.reason}")
+
+    if census_only:
+        typer.echo("Census only — no items fetched. Read census.md, then choose --count.")
+        return
+    typer.echo(
+        f"{manifest.counts.roots} root(s), {manifest.counts.records} record(s), "
+        f"export id {manifest.export_id}"
+    )
+    typer.echo(f"Census: {result.directory / export_module.CENSUS_MARKDOWN_FILE}")
 
 
 @app.command()

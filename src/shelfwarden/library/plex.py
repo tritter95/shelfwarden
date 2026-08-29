@@ -14,6 +14,7 @@ later, because both fail silently:
   the timezone of the machine that produced it.
 """
 
+import hashlib
 import os
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
@@ -23,6 +24,7 @@ from xml.etree import ElementTree
 
 import plexapi
 import plexapi.utils
+from plexapi.base import PlexPartialObject
 from plexapi.exceptions import (
     BadRequest,
     NotFound,
@@ -46,6 +48,7 @@ from shelfwarden.library.base import (
     LibraryRequestError,
     LibraryUnavailable,
     LibraryUnsupported,
+    ProviderInfo,
 )
 from shelfwarden.library.session import StatusRecorder, build_session, status_from_message
 from shelfwarden.models.ids import ItemId, parse_guids
@@ -126,6 +129,46 @@ RELOAD_INCLUDES: dict[FetchProfile, dict[str, bool]] = {
         "includeReviews": False,
     },
 }
+
+
+def effective_request_params(profile: FetchProfile) -> dict[str, str]:
+    """What a `reload()` at this profile *actually* asks the server for.
+
+    `RELOAD_INCLUDES` is a set of overrides, not a description of the request, and
+    recording it in the export manifest would understate what produced a record --
+    which is worse than recording nothing, because it looks authoritative.
+
+    plexapi's `_buildDetailsKey` starts from every key in
+    `PlexPartialObject._INCLUDES`, overlays the kwargs, and drops whatever ends up
+    `False`/`0`/`'0'`. Ten of the eleven keys we do not override are already zero
+    and vanish. The eleventh is `includeFields='thumbBlurHash,artBlurHash'`, a
+    non-falsy **string** that therefore survives into every request we make. Its
+    name is a trap: it selects computed blur hashes and has nothing to do with the
+    `<Field>` elements that carry lock state.
+
+    The private `_INCLUDES` is read deliberately. The alternative is hardcoding a
+    copy that silently rots when plexapi changes its defaults, and this module is
+    the confinement boundary where reaching into plexapi is the job.
+
+    `STUB` is not answerable: it marks a record that came from a *listing*, which
+    plexapi builds with a different key builder entirely. Asking for its reload
+    parameters is a caller error, and a bare `KeyError` would name neither the
+    cause nor the fix.
+    """
+    overrides = RELOAD_INCLUDES.get(profile)
+    if overrides is None:
+        offered = ", ".join(sorted(str(known) for known in RELOAD_INCLUDES))
+        raise ValueError(
+            f"{profile} is what a listing returns, not something a caller can ask "
+            f"the server for, so it has no reload parameters. Use one of: {offered}."
+        )
+    params: dict[str, str] = {}
+    for key, default in PlexPartialObject._INCLUDES.items():
+        value = overrides.get(key, default)
+        if value is False or value == 0 or value == "0":
+            continue
+        params[key] = "1" if value is True else str(value)
+    return params
 
 
 def configure_plexapi() -> None:
@@ -249,6 +292,8 @@ def _parts(obj: Any) -> tuple[FilePart, ...]:
         for part in getattr(medium, "parts", ()) or ():
             parts.append(
                 FilePart(
+                    media_id=_text(getattr(medium, "id", None)),
+                    part_id=_text(getattr(part, "id", None)),
                     path=part.file or "",
                     container=_text(part.container) or _text(medium.container),
                     video_resolution=_text(getattr(medium, "videoResolution", None)),
@@ -291,6 +336,19 @@ class PlexLibrary:
             self._server = PlexServer(baseurl, token, session=session, timeout=timeout)
 
         self._verdicts: dict[str, AudiobookVerdict] = {}
+
+    # -- identity ---------------------------------------------------------
+
+    @_translates_errors
+    def provider_info(self) -> ProviderInfo:
+        """Who answered. The machine identifier is hashed, never recorded raw."""
+        machine_id = _text(getattr(self._server, "machineIdentifier", None))
+        return ProviderInfo(
+            provider=PROVIDER,
+            server_id=hash_server_id(machine_id) if machine_id else "unknown",
+            server_version=_text(getattr(self._server, "version", None)),
+            platform=_text(getattr(self._server, "platform", None)),
+        )
 
     # -- sections ---------------------------------------------------------
 
@@ -457,6 +515,17 @@ class PlexLibrary:
 
     def _normalize(self, obj: Any, section_id: str, profile: FetchProfile) -> NormalizedItem:
         return normalize_item(obj, section_id, profile)
+
+
+def hash_server_id(machine_id: str) -> str:
+    """A stable, non-identifying handle for a server.
+
+    The machine identifier is durable and server-unique, which is exactly what
+    makes it worth recording and exactly what makes recording it verbatim a leak.
+    The hash preserves the only property the manifest needs -- whether two exports
+    came from the same server -- and discards the rest.
+    """
+    return hashlib.sha256(machine_id.encode("utf-8")).hexdigest()[:16]
 
 
 def _assert_object_autoreload_off(obj: Any) -> None:

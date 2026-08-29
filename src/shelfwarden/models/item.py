@@ -80,10 +80,26 @@ class FetchProfile(StrEnum):
 
 
 class FilePart(BaseModel):
-    """One file backing an item."""
+    """One file backing an item.
+
+    `media_id` and `part_id` are Plex's own element ids. Like `ItemId.rating_key`
+    they are an **address, not an identity** -- they move if an item is removed and
+    re-added. They are recorded because a part otherwise has no name at all: step
+    0.5's `filename_unmatchable` must say which part it rewrote, and Phase 3's
+    rename must find that same part again, and `parts[2]` is a positional
+    identifier of exactly the kind invariant 9 rejects.
+
+    Parts are stored in the order the server returned them and are deliberately
+    **not** sorted by id. That order carries meaning -- disc order, and the split
+    `multi_file_split` operates on -- and reordering would destroy information to
+    buy a stability guarantee no offline test can actually prove. The ids make an
+    unstable order visible in a diff instead, which is the real need.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    media_id: str | None = None
+    part_id: str | None = None
     # Deliberately NOT NFC-normalized. Every other string here is normalized so it
     # hashes consistently, but a path is an argument to a future filesystem
     # operation -- Phase 3 renames real files -- and macOS hands out NFD paths.
@@ -94,6 +110,27 @@ class FilePart(BaseModel):
     video_resolution: str | None = None
     size_bytes: int | None = None
     duration_ms: int | None = None
+
+
+def _unique_part_ids(parts: tuple[FilePart, ...]) -> tuple[FilePart, ...]:
+    """Reject an item whose parts share an id.
+
+    A duplicated `Media`/`Part` block would make `part_id` useless as an address
+    for the one thing it exists to address, and it would do so silently. Ids are
+    optional -- a provider need not have them -- so only the ones present are
+    checked.
+    """
+    present = [part.part_id for part in parts if part.part_id is not None]
+    if len(present) != len(set(present)):
+        duplicates = sorted({pid for pid in present if present.count(pid) > 1})
+        raise ValueError(
+            f"parts share part_id(s) {duplicates}; a part id is how a repair names "
+            "which file it changed, so a duplicate makes that reference ambiguous"
+        )
+    return parts
+
+
+Parts = Annotated[tuple[FilePart, ...], AfterValidator(_unique_part_ids)]
 
 
 class BaseItem(BaseModel):
@@ -142,7 +179,7 @@ class MovieItem(BaseItem):
     audience_rating: float | None = None
     originally_available_at: date | None = None
     duration_ms: int | None = None
-    parts: tuple[FilePart, ...] = ()
+    parts: Parts = ()
 
 
 class ShowItem(BaseItem):
@@ -178,7 +215,7 @@ class EpisodeItem(BaseItem):
     year: int | None = None
     originally_available_at: date | None = None
     duration_ms: int | None = None
-    parts: tuple[FilePart, ...] = ()
+    parts: Parts = ()
 
 
 class AuthorItem(BaseItem):
@@ -205,7 +242,7 @@ class AudiobookPartItem(BaseItem):
     grandparent: ItemId | None = None
     index: int | None = None
     duration_ms: int | None = None
-    parts: tuple[FilePart, ...] = ()
+    parts: Parts = ()
 
 
 NormalizedItem = Annotated[

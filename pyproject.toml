@@ -119,6 +119,17 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
+name = "the export depends on the provider protocol, not the Plex adapter"
+type = "forbidden"
+source_modules = ["shelfwarden.evals"]
+forbidden_modules = ["shelfwarden.library.plex"]
+# Added in step 0.4. `evals/` imports `library/base.py` freely -- the protocol is
+# the whole point -- but never the adapter. That is what keeps the export's
+# byte-identity test offline permanently rather than until someone needs
+# `machineIdentifier` in a hurry, and it is library.plex's own confinement rule
+# pointed the other way. See docs/plans/step-0.4-export-census.md §3.7.
+
+[[tool.importlinter.contracts]]
 name = "library and sources do not import the agent"
 type = "forbidden"
 source_modules = ["shelfwarden.library", "shelfwarden.sources"]

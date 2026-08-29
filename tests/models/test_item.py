@@ -48,7 +48,15 @@ SAMPLES = {
         originally_available_at=date(2001, 4, 25),
         guids=parse_guids("plex://movie/abc", ["tmdb://194", "imdb://tt0211915"]),
         locked_fields=("title",),
-        parts=(FilePart(path="/media/Amélie (2001).mkv", container="mkv", size_bytes=1),),
+        parts=(
+            FilePart(
+                media_id="9",
+                part_id="10",
+                path="/media/Amélie (2001).mkv",
+                container="mkv",
+                size_bytes=1,
+            ),
+        ),
         added_at=datetime(2024, 1, 1, tzinfo=UTC),
     ),
     MediaKind.SHOW: ShowItem(
@@ -247,3 +255,107 @@ class TestSupportingTypes:
     def test_item_stub_carries_identity_and_little_else(self):
         """Tool results are resent every turn, so a listing stays minimal."""
         assert set(ItemStub.model_fields) == {"item_id", "media_kind", "title", "year"}
+
+
+class TestPartIdentity:
+    """Step 0.4, Decision 4. A part had no name at all before this.
+
+    `filename_unmatchable` (0.5) rewrites one part's path and its truth record has
+    to say which; Phase 3's rename has to find that same part again to revert it.
+    `parts[2]` is a positional identifier, which is exactly what invariant 9
+    rejects.
+    """
+
+    def test_the_ids_round_trip(self):
+        item = SAMPLES[MediaKind.MOVIE]
+        (part,) = load_item(canonical_json(dump_item(item))).parts
+        assert (part.media_id, part.part_id) == ("9", "10")
+
+    def test_they_are_optional_because_a_provider_need_not_have_them(self):
+        """SnapshotLibrary (0.7) and any non-Plex provider are free to omit them."""
+        part = FilePart(path="/media/x.mkv")
+        assert part.media_id is None and part.part_id is None
+
+    def test_duplicate_part_ids_within_an_item_are_rejected(self):
+        """A duplicated Media/Part block would make `part_id` useless as an address
+        for the one thing it exists to address, and would do so silently."""
+        with pytest.raises(ValidationError, match="part_id"):
+            MovieItem(
+                item_id=_id("1"),
+                fetched=FetchProfile.FULL,
+                title="x",
+                parts=(
+                    FilePart(part_id="10", path="/media/a.mkv"),
+                    FilePart(part_id="10", path="/media/b.mkv"),
+                ),
+            )
+
+    def test_the_rejection_names_the_offending_id(self):
+        with pytest.raises(ValidationError, match="'77'"):
+            MovieItem(
+                item_id=_id("1"),
+                fetched=FetchProfile.FULL,
+                title="x",
+                parts=(
+                    FilePart(part_id="77", path="/media/a.mkv"),
+                    FilePart(part_id="88", path="/media/b.mkv"),
+                    FilePart(part_id="77", path="/media/c.mkv"),
+                ),
+            )
+
+    def test_several_parts_without_ids_are_fine(self):
+        """Only ids that are present are checked -- `None` is absence, not a value."""
+        item = MovieItem(
+            item_id=_id("1"),
+            fetched=FetchProfile.FULL,
+            title="x",
+            parts=(FilePart(path="/media/a.mkv"), FilePart(path="/media/b.mkv")),
+        )
+        assert len(item.parts) == 2
+
+    def test_a_shared_media_id_across_parts_is_allowed(self):
+        """One Media element legitimately holds several Parts -- a split file. It
+        is the Part id that has to be unique."""
+        item = MovieItem(
+            item_id=_id("1"),
+            fetched=FetchProfile.FULL,
+            title="x",
+            parts=(
+                FilePart(media_id="9", part_id="10", path="/media/cd1.mkv"),
+                FilePart(media_id="9", part_id="11", path="/media/cd2.mkv"),
+            ),
+        )
+        assert {part.media_id for part in item.parts} == {"9"}
+
+    @pytest.mark.parametrize(
+        "model", [MovieItem, EpisodeItem, AudiobookPartItem], ids=lambda m: m.__name__
+    )
+    def test_every_kind_that_carries_parts_enforces_it(self, model):
+        """So a kind added later cannot quietly opt out of the check."""
+        with pytest.raises(ValidationError, match="part_id"):
+            model(
+                item_id=_id("1"),
+                fetched=FetchProfile.FULL,
+                title="x",
+                parts=(
+                    FilePart(part_id="1", path="/media/a.mkv"),
+                    FilePart(part_id="1", path="/media/b.mkv"),
+                ),
+            )
+
+    def test_part_order_is_preserved_not_sorted_by_id(self):
+        """Order carries meaning -- disc order, and the split `multi_file_split`
+        operates on. Sorting would destroy information to buy a stability
+        guarantee no offline test can actually prove."""
+        item = MovieItem(
+            item_id=_id("1"),
+            fetched=FetchProfile.FULL,
+            title="x",
+            parts=(
+                FilePart(part_id="20", path="/media/cd1.mkv"),
+                FilePart(part_id="3", path="/media/cd2.mkv"),
+            ),
+        )
+        assert [part.part_id for part in item.parts] == ["20", "3"]
+        reloaded = load_item(canonical_json(dump_item(item)))
+        assert [part.part_id for part in reloaded.parts] == ["20", "3"]

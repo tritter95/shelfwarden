@@ -61,11 +61,19 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] **Done when:** a test asserts the protocol exposes no mutating method, and audiobook detection passes against committed fixtures
 
 ### 0.4 Library export + census
-- [ ] `shelfwarden export` → deterministic JSONL + `manifest.json`
-- [ ] Capture current **field lock state** (needed later for revert)
-- [ ] Emit a **census**: counts by section, agent type, media kind, container
-- [ ] Census counts guids by namespace, **including `UNKNOWN` with examples** — the legacy guid forms in step 0.2 could not be verified without a live legacy-agent library, so the real export reports which forms actually exist instead of the parser guessing
-- [ ] **Done when:** re-running the export against an unchanged library is byte-identical, and the census informs slice targets
+
+> Design detail, the plexapi include-set findings behind it, and the seven decisions taken: [`plans/step-0.4-export-census.md`](./plans/step-0.4-export-census.md).
+
+- [x] `shelfwarden export` → deterministic JSONL + `manifest.json`, written into one directory per export via temp-dir-then-`os.replace`, so an interrupted run leaves nothing rather than something plausible
+- [x] Capture current **field lock state** (needed later for revert), with a test that it survives the round trip
+- [x] Emit a **census**: counts by section, agent type, media kind, container — in **two tiers, each labelled with its own basis**. Population is exact from the listing walk; the slice tier carries `coverage: {records, population}` on every block, because a guid count taken from a 200-item slice and printed without its `of` reads as a statement about the library
+- [x] Census counts guids by namespace, **including `UNKNOWN` with examples** — the legacy guid forms in step 0.2 could not be verified without a live legacy-agent library, so the real export reports which forms actually exist instead of the parser guessing. Example lists are capped and the cap reports what it dropped
+- [x] `--census-only` walks listings and writes the population tier alone, with no per-item fetches — the command you run *first*, to choose `--count` from evidence
+- [x] `--count` counts **roots**, and a family that would exceed `--max-records` is dropped whole and recorded in `manifest.dropped`. Never truncated: half a show is an unsolvable case in 0.5 and a mysteriously depressed score in 0.8
+- [x] `provider_info()` added to the protocol so the manifest can name its source without `evals/` reaching through `PlexLibrary._server`; the machine identifier is **hashed**, never recorded raw. New import contract forbids `shelfwarden.evals` → `shelfwarden.library.plex`
+- [x] `FilePart` gained `media_id` / `part_id` — a part had no name at all, and `parts[2]` is a positional identifier of the kind invariant 9 rejects (correction recorded in `implementation-plan.md` §3)
+- [x] The manifest records the **effective** request parameters — what plexapi's `_buildDetailsKey` actually puts on the wire — not our `RELOAD_INCLUDES` override dict, which understates the request while looking authoritative (finding recorded in `development-practices.md` §4.3)
+- [x] **Done when:** re-running the export against an unchanged library is byte-identical, and the census informs slice targets — asserted in-process *and* across two `PYTHONHASHSEED` values in forked subprocesses, since a same-process comparison cannot see hash-order leakage at all
 
 ### 0.45 Shared comparators + mechanical screen
 - [ ] `evals/compare.py` — the comparator library shared by scorer, screen, and detectability witness (`SupportStrength`, not bool)

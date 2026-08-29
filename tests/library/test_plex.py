@@ -25,11 +25,21 @@ from shelfwarden.library.base import (
     LibraryRequestError,
     LibraryUnavailable,
 )
-from shelfwarden.library.plex import PlexLibrary, configure_plexapi, normalize_item
+from shelfwarden.library.plex import (
+    PlexLibrary,
+    configure_plexapi,
+    effective_request_params,
+    hash_server_id,
+    normalize_item,
+)
 from shelfwarden.library.session import StatusRecorder
 from shelfwarden.models.ids import IdNamespace, ItemId
 from shelfwarden.models.item import FetchProfile, MediaKind, dump_item
 from tests.library.conftest import RecordingServer, StubServer, build, load_fixture
+
+# STUB is excluded deliberately: it describes what a listing returned, not
+# something a caller can ask the server for. See effective_request_params.
+REQUESTABLE_PROFILES = [FetchProfile.CORE, FetchProfile.FULL]
 
 ALL_FIXTURES = [
     ("movie_new_agent", MediaKind.MOVIE),
@@ -344,3 +354,111 @@ class TestSections:
 
 def test_plex_library_satisfies_the_protocol():
     assert isinstance(PlexLibrary(server=StubServer()), LibraryProvider)
+
+
+class TestProviderInfo:
+    """Step 0.4 added this so the export manifest could name its source without
+    `evals/export.py` reaching through `PlexLibrary._server`."""
+
+    class IdentifiedServer(StubServer):
+        machineIdentifier = "abc123-real-machine-identifier"
+        version = "1.41.0.1234"
+        platform = "Linux"
+
+    def test_the_machine_identifier_is_hashed_never_recorded_raw(self):
+        """It is durable and server-unique, which is exactly what makes it worth
+        recording and exactly what makes recording it verbatim a leak.
+        capture_fixtures.py already scrubs it; this keeps the two consistent."""
+        info = PlexLibrary(server=self.IdentifiedServer()).provider_info()
+        assert info.server_id == hash_server_id("abc123-real-machine-identifier")
+        assert "abc123" not in info.server_id
+        assert len(info.server_id) == 16
+
+    def test_the_hash_is_stable_across_calls_and_processes(self):
+        """A manifest's only question is "same server?"; a per-process salt would
+        make two exports of one library look like two libraries."""
+        assert hash_server_id("m") == hash_server_id("m")
+        assert hash_server_id("m") != hash_server_id("n")
+
+    def test_version_and_platform_travel_verbatim(self):
+        info = PlexLibrary(server=self.IdentifiedServer()).provider_info()
+        assert info.provider == "plex"
+        assert info.server_version == "1.41.0.1234"
+        assert info.platform == "Linux"
+
+    def test_a_server_that_will_not_say_reads_as_unknown(self):
+        """Absent provenance is recorded as absent rather than guessed at."""
+        info = PlexLibrary(server=StubServer()).provider_info()
+        assert info.server_id == "unknown"
+        assert info.server_version is None
+
+    def test_it_is_a_read_and_therefore_translates_its_errors(self):
+        class Boom(StubServer):
+            @property
+            def machineIdentifier(self):
+                raise BadRequest("(503) service_unavailable")
+
+        with pytest.raises(LibraryUnavailable):
+            PlexLibrary(server=Boom(), recorder=StatusRecorder()).provider_info()
+
+
+class TestEffectiveRequestParams:
+    """Finding 1 of step 0.4. `RELOAD_INCLUDES` is a set of *overrides*; recording
+    it in a manifest would understate what produced a record while looking
+    authoritative."""
+
+    @pytest.mark.parametrize("profile", REQUESTABLE_PROFILES)
+    def test_include_fields_survives_although_we_never_ask_for_it(self, profile):
+        """The one non-falsy default among the eleven keys we do not override.
+        `_buildDetailsKey` drops False/0/'0' and keeps everything else, and
+        `includeFields` defaults to a *string*. Its name is a trap: it selects
+        blur hashes and has nothing to do with the <Field> lock elements."""
+        assert effective_request_params(profile)["includeFields"] == "thumbBlurHash,artBlurHash"
+
+    def test_a_listing_profile_is_refused_by_name(self):
+        """STUB marks a record that came from a listing, which plexapi builds with
+        a different key builder entirely. A bare KeyError would name neither the
+        cause nor the fix."""
+        with pytest.raises(ValueError, match="core, full"):
+            effective_request_params(FetchProfile.STUB)
+
+    def test_the_two_profiles_differ_by_exactly_check_files(self):
+        """Which is why CORE is the export default: checkFiles buys a server-side
+        stat per part and maps to no field this model carries."""
+        core = effective_request_params(FetchProfile.CORE)
+        full = effective_request_params(FetchProfile.FULL)
+        assert set(full) - set(core) == {"checkFiles"}
+        assert set(core) - set(full) == set()
+        assert full["checkFiles"] == "1"
+
+    @pytest.mark.parametrize("profile", REQUESTABLE_PROFILES)
+    def test_nothing_falsy_is_reported_as_requested(self, profile):
+        """A parameter plexapi drops must not appear in the manifest: "asked for
+        and got nothing" and "never asked" have to stay different facts."""
+        params = effective_request_params(profile)
+        assert all(value not in ("", "0", "False") for value in params.values())
+
+    def test_it_matches_what_plexapi_actually_builds(self):
+        """Pinned against plexapi's own key builder rather than against our
+        reading of it, so a change in its defaults fails here."""
+        from urllib.parse import parse_qs, urlparse
+
+        movie = load_fixture("movie_new_agent")
+        for profile in REQUESTABLE_PROFILES:
+            key = movie._buildDetailsKey(**plex_module.RELOAD_INCLUDES[profile])
+            built = {name: values[0] for name, values in parse_qs(urlparse(key).query).items()}
+            assert built == effective_request_params(profile)
+
+    def test_the_effective_set_is_uniform_across_every_media_kind(self):
+        """`_INCLUDES` is defined once on PlexPartialObject and no subclass
+        overrides it -- worth pinning, since one that did would silently make the
+        manifest wrong for that kind alone."""
+        from urllib.parse import parse_qs, urlparse
+
+        expected = effective_request_params(FetchProfile.CORE)
+        for name, _ in ALL_FIXTURES:
+            key = load_fixture(name)._buildDetailsKey(
+                **plex_module.RELOAD_INCLUDES[FetchProfile.CORE]
+            )
+            built = {n: values[0] for n, values in parse_qs(urlparse(key).query).items()}
+            assert built == expected, name

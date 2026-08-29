@@ -282,6 +282,25 @@ Then call `reload()` explicitly with the exact includes needed:
 item.reload(checkFiles=True, includeChapters=False, includeMarkers=False)
 ```
 
+**An include dict is a set of overrides, not a description of the request.** Verified in step 0.4, and it matters because the export manifest is supposed to record *what produced this record*. `_buildDetailsKey` starts from all nineteen keys of `PlexPartialObject._INCLUDES`, overlays the kwargs, and drops every key whose resulting value is `False`, `0`, or `'0'`. Our set names eight. Of the eleven left at their defaults, ten are already zero and vanish — and one is not:
+
+```python
+'includeFields': 'thumbBlurHash,artBlurHash',   # a string, therefore never falsy
+```
+
+So every request we make carries a parameter our dict never mentions:
+
+```
+movie   core  /library/metadata/1701?includeFields=thumbBlurHash%2CartBlurHash
+movie   full  /library/metadata/1701?checkFiles=1&includeFields=thumbBlurHash%2CartBlurHash
+```
+
+Record the **effective** set, never the override dict — `library.plex.effective_request_params()` computes it from `_INCLUDES` with no server involved. Recording the overrides would understate the request while looking authoritative, which is worse than recording nothing. `_INCLUDES` is defined once on `PlexPartialObject` and no subclass overrides it, so the effective set is uniform across every media kind; a test pins that rather than assuming it.
+
+Note also that CORE and FULL differ by exactly one parameter, `checkFiles=1`, which asks the server to stat every backing file and annotate `Part` with `accessible`/`exists`. This model maps neither, so the two profiles produce identical output at different cost — and `accessible` is *volatile*, flipping when a mount drops, so mapping it would have made export byte-identity a function of whether a NAS was awake. The export defaults to CORE for that reason.
+
+**`includeFields` is a naming trap.** It sounds like it governs the `<Field>` elements that carry lock state. It does not — it is a blur-hash selector, and `<Field>` elements arrive from the metadata endpoint regardless of it. Relatedly, **listings already carry guids**: `_buildSearchKey` sets `includeGuids=1` and `_buildQueryKey` hardcodes it, so a per-item fetch is not needed to see `<Guid>` children. The per-item fetch in the export exists for lock state alone.
+
 ### 4.4 Pagination
 
 ```python
@@ -437,6 +456,17 @@ def test_evidence_store_contains_no_secrets(): ...
 
 The read-only registry test is the structural guarantee behind spec §3.2 and must run on every commit.
 
+**A same-process determinism test is not a determinism test.** `pytest` runs in one process with one hash seed, so "produce it twice and compare" passes against code whose ordering depends on `PYTHONHASHSEED` — and CI stays green while two developers' exports differ for no visible reason. Anything that aggregates has to be compared across forked subprocesses with an explicit seed on each side:
+
+```python
+subprocess.run([sys.executable, "-c", program, out], env={"PYTHONHASHSEED": "0", ...})
+subprocess.run([sys.executable, "-c", program, out], env={"PYTHONHASHSEED": "1", ...})
+```
+
+The exposure is narrower than it looks and wider than it feels. `canonical_json` sorts mapping keys, so a serialized *object* is safe. **Lists are not**, and neither is anything built from `set` iteration or `Counter.most_common()`, whose tie order is insertion order. Sort every aggregation by an explicit total order — count descending, then key ascending — and cap example lists only *after* sorting, so which examples survive is a function of the data rather than of iteration order.
+
+The mirror-image trap is worth stating too, because it bit step 0.4 and the first trap hides it: since `canonical_json` sorts keys, a count-ordered *mapping* does not survive the round trip either — it comes back alphabetical. Ordering a human is meant to read has to be re-derived at render time, not inherited from the dict it was stored in.
+
 ### 8.3 Async
 
 `pytest-asyncio` in `asyncio_mode = "auto"`. Set `asyncio_default_fixture_loop_scope` explicitly to avoid the deprecation warning and pin fixture loop semantics.
@@ -466,6 +496,14 @@ Secrets — Plex token, TMDB bearer, TVDB apikey/pin, OpenAI and Anthropic keys 
 The Plex token grants whatever the underlying account can do. Prefer a token scoped to a non-admin account for development if the server allows it, and keep destructive-capable tokens out of any eval or CI path.
 
 Redact secrets in logs, spans, evidence records, and error messages. Assert it in a test rather than trusting review.
+
+`config.py` implements this from step 0.4. Three details are load-bearing:
+
+- **The token is `repr=False` *and* the `__repr__` is written out by hand.** The field flag alone is one refactor away from being regenerated with the default, and the leak-shaped mistake is a log line rather than a debugger.
+- **`Settings.secrets` is the single list of things that must never be written**, and the export runs `iter_secret_hits` over every payload *before* anything lands on disk. A leak aborts the export rather than being cleaned up afterwards.
+- **A missing setting names the variables to export.** "Configuration missing" is a dead end; the §5.4 correctable-error rule applies to configuration too.
+
+Redaction replaces longest secret first, so a secret containing another does not leave a readable fragment behind.
 
 ---
 

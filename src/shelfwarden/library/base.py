@@ -8,6 +8,7 @@ library. It lives here, in what this protocol declines to offer.
 Phase 3 adds a separate `MutableLibraryProvider`. It does not extend this one.
 """
 
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Protocol, runtime_checkable
 
@@ -51,6 +52,31 @@ MUTATING_METHODS: frozenset[str] = frozenset(
         "uploadPoster",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderInfo:
+    """Who answered, so a dataset can say where it came from.
+
+    Step 0.4's export manifest needs this and the protocol had no way to ask for
+    it; the alternative was reaching through `PlexLibrary._server`, which would
+    have made `evals/export.py` depend on the Plex adapter and forfeited the
+    offline byte-identity test.
+
+    `server_id` is a **hash** of the server's machine identifier, never the
+    identifier itself. The hash answers the only question the manifest actually
+    asks -- are these two exports from the same server? -- and discards the part
+    that identifies it. `scripts/capture_fixtures.py` already scrubs the raw value
+    from committed fixtures; recording it verbatim here would undo that.
+
+    `SnapshotLibrary` (step 0.7) returns `provider="snapshot"` with the dataset id
+    as `server_id`, so a re-export of a corrupted dataset carries the same shape.
+    """
+
+    provider: str
+    server_id: str
+    server_version: str | None = None
+    platform: str | None = None
 
 
 class Retryability(StrEnum):
@@ -161,6 +187,10 @@ class LibraryProvider(Protocol):
     `SnapshotLibrary` (step 0.7) implements this same protocol and raises this
     same taxonomy, which is what lets the agent run unchanged against both.
     """
+
+    def provider_info(self) -> ProviderInfo:
+        """Who is answering. Read-only, and recorded in every export manifest."""
+        ...
 
     def sections(self) -> tuple[SectionRef, ...]:
         """Every library section the token can see."""
