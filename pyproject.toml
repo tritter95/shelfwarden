@@ -130,6 +130,26 @@ forbidden_modules = ["shelfwarden.library.plex"]
 # pointed the other way. See docs/plans/step-0.4-export-census.md §3.7.
 
 [[tool.importlinter.contracts]]
+name = "the comparator library is a leaf"
+type = "forbidden"
+source_modules = ["shelfwarden.compare"]
+forbidden_modules = [
+    "shelfwarden.agent",
+    "shelfwarden.evals",
+    "shelfwarden.library",
+    "shelfwarden.sources",
+]
+# Added in step 0.45. The comparators are shared by the screen (0.45), the
+# detectability witness (0.5), the scorer (0.8) -- all in `evals/` -- and by the
+# validator's *support* and referent-binding checks in `agent/validate.py`
+# (1.4). Leaving the module in `evals/` would make the agent import the package
+# holding the answer key and would make the Phase 5 MCP extraction carry
+# `evals/` with it. That import does not exist yet, so this contract is honest
+# today and breaks CI at exactly the step that would violate it -- which is how
+# the other five behave. See docs/plans/step-0.45-comparators-screen.md,
+# Finding 5 and Decision 1.
+
+[[tool.importlinter.contracts]]
 name = "library and sources do not import the agent"
 type = "forbidden"
 source_modules = ["shelfwarden.library", "shelfwarden.sources"]

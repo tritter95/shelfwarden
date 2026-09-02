@@ -5,6 +5,7 @@ suite is also evidence that nothing reached for the network.
 """
 
 import os
+import unicodedata
 from datetime import UTC
 from xml.etree import ElementTree as ET
 
@@ -15,6 +16,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout
 
 from shelfwarden.canonical import canonical_json
+from shelfwarden.compare import SupportStrength, compare_title, parse_release_name
 from shelfwarden.library import plex as plex_module
 from shelfwarden.library.base import (
     LibraryAuthError,
@@ -188,6 +190,26 @@ class TestMapping:
         assert part.container == "mkv"
         assert part.video_resolution == "1080"
         assert part.size_bytes == 8000000000
+
+    def test_an_nfd_path_reaches_the_model_undecomposed_while_the_title_is_composed(self):
+        """The trap in `compare.fold_text`, shown to be reachable from real data.
+
+        Text crossing into the model is NFC-normalized; `FilePart.path` is
+        deliberately exempt, because a path is an argument to a future filesystem
+        operation and an NFC-normalized NFD path may name nothing on disk. That
+        exemption is correct and it is also the *only* door decomposed text uses
+        to reach the comparators -- so the fold, not the model, has to close it.
+        """
+        item = normalize_item(load_fixture("movie_nfd_path"), "3", FetchProfile.FULL)
+        (part,) = item.parts
+        assert unicodedata.is_normalized("NFC", item.title)
+        assert not unicodedata.is_normalized("NFC", part.path)
+        assert part.path != unicodedata.normalize("NFC", part.path)
+
+        # And the comparison site closes it, which is what makes the exemption
+        # affordable. `filename_unmatchable` is exactly this comparison.
+        parsed = parse_release_name(part.path)
+        assert compare_title(parsed.title, item.title).strength is SupportStrength.NORMALIZED
 
     def test_empty_strings_become_none(self):
         obj = build(

@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict
 
+from shelfwarden.compare import has_resolvable_id
+from shelfwarden.models.finding import ProblemClass
 from shelfwarden.models.ids import IdNamespace, ItemId
 from shelfwarden.models.item import (
     AudiobookItem,
@@ -109,7 +111,7 @@ class ReadinessRow(_Frozen):
     exact defect recorded as Defect 3 in `implementation-plan.md` §3.
     """
 
-    problem_class: str
+    problem_class: ProblemClass
     eligible: int
     basis: str
     advisory: bool = True
@@ -333,13 +335,6 @@ def _advisory_title_key(item: NormalizedItem) -> str:
     return " ".join(item.title.casefold().split())
 
 
-def _resolvable(item: NormalizedItem) -> bool:
-    return any(
-        external.namespace not in (IdNamespace.UNKNOWN, IdNamespace.LOCAL, IdNamespace.PLEX)
-        for external in item.guids
-    )
-
-
 def _title_year_groups(index: ExportIndex, kind: MediaKind) -> list[list[NormalizedItem]]:
     groups: dict[tuple[str, str, int | None], list[NormalizedItem]] = defaultdict(list)
     for item in index.of_kind(kind):
@@ -417,49 +412,55 @@ def _with_edition(index: ExportIndex) -> int:
 
 # Declared as data, in a fixed order, so the rendered table does not reorder
 # between runs and a reader can diff two censuses line by line.
-READINESS_RULES: tuple[tuple[str, str], ...] = (
-    ("wrong_match", "movies/shows with a resolvable external id to swap"),
-    ("year_collision_remake", "same crude title key, different year, one section"),
-    ("foreign_title_variant", "upper bound: movies with a resolvable id (needs TMDB)"),
-    ("alternate_cut", "movies carrying an edition_title"),
-    ("missing_metadata", "items with a non-empty summary to null out"),
-    ("duplicate_quality", "groups sharing a crude (title, year) key in one section"),
-    ("episode_wrong_season", "shows with >1 exported season and episodes under them"),
-    ("absolute_vs_seasonal", f"seasons with >{ABSOLUTE_NUMBERING_EPISODES} episodes"),
-    ("filename_unmatchable", "items with at least one file part"),
-    ("series_order_broken", "audiobooks carrying a series name or an index"),
-    ("author_name_variant", "authors with >1 exported book"),
-    ("narrator_as_author", "authors with >1 exported book"),
-    ("multi_file_split", "audiobooks with >1 part"),
-    ("missing_series", "audiobooks carrying a series name or an index"),
-    ("anthology_omnibus", "not structurally detectable from an export; curate by hand"),
+READINESS_RULES: tuple[tuple[ProblemClass, str], ...] = (
+    (ProblemClass.WRONG_MATCH, "movies/shows with a resolvable external id to swap"),
+    (ProblemClass.YEAR_COLLISION_REMAKE, "same crude title key, different year, one section"),
+    (
+        ProblemClass.FOREIGN_TITLE_VARIANT,
+        "upper bound: movies with a resolvable id (needs TMDB)",
+    ),
+    (ProblemClass.ALTERNATE_CUT, "movies carrying an edition_title"),
+    (ProblemClass.MISSING_METADATA, "items with a non-empty summary to null out"),
+    (ProblemClass.DUPLICATE_QUALITY, "groups sharing a crude (title, year) key in one section"),
+    (ProblemClass.EPISODE_WRONG_SEASON, "shows with >1 exported season and episodes under them"),
+    (ProblemClass.ABSOLUTE_VS_SEASONAL, f"seasons with >{ABSOLUTE_NUMBERING_EPISODES} episodes"),
+    (ProblemClass.FILENAME_UNMATCHABLE, "items with at least one file part"),
+    (ProblemClass.SERIES_ORDER_BROKEN, "audiobooks carrying a series name or an index"),
+    (ProblemClass.AUTHOR_NAME_VARIANT, "authors with >1 exported book"),
+    (ProblemClass.NARRATOR_AS_AUTHOR, "authors with >1 exported book"),
+    (ProblemClass.MULTI_FILE_SPLIT, "audiobooks with >1 part"),
+    (ProblemClass.MISSING_SERIES, "audiobooks carrying a series name or an index"),
+    (
+        ProblemClass.ANTHOLOGY_OMNIBUS,
+        "not structurally detectable from an export; curate by hand",
+    ),
 )
 
 
 def readiness(index: ExportIndex) -> tuple[ReadinessRow, ...]:
     """Advisory per-class candidate counts. See `ReadinessRow`."""
-    counts: dict[str, int] = {
-        "wrong_match": sum(
+    counts: dict[ProblemClass, int] = {
+        ProblemClass.WRONG_MATCH: sum(
             1
             for item in (*index.of_kind(MediaKind.MOVIE), *index.of_kind(MediaKind.SHOW))
-            if _resolvable(item)
+            if has_resolvable_id(item.guids)
         ),
-        "year_collision_remake": _same_title_different_year(index),
-        "foreign_title_variant": sum(
-            1 for item in index.of_kind(MediaKind.MOVIE) if _resolvable(item)
+        ProblemClass.YEAR_COLLISION_REMAKE: _same_title_different_year(index),
+        ProblemClass.FOREIGN_TITLE_VARIANT: sum(
+            1 for item in index.of_kind(MediaKind.MOVIE) if has_resolvable_id(item.guids)
         ),
-        "alternate_cut": _with_edition(index),
-        "missing_metadata": _with_summary(index),
-        "duplicate_quality": len(_title_year_groups(index, MediaKind.MOVIE)),
-        "episode_wrong_season": _shows_with_multiple_seasons(index),
-        "absolute_vs_seasonal": _long_seasons(index),
-        "filename_unmatchable": _with_files(index),
-        "series_order_broken": _books_with_series(index),
-        "author_name_variant": _authors_with_multiple_books(index),
-        "narrator_as_author": _authors_with_multiple_books(index),
-        "multi_file_split": _multi_part_books(index),
-        "missing_series": _books_with_series(index),
-        "anthology_omnibus": 0,
+        ProblemClass.ALTERNATE_CUT: _with_edition(index),
+        ProblemClass.MISSING_METADATA: _with_summary(index),
+        ProblemClass.DUPLICATE_QUALITY: len(_title_year_groups(index, MediaKind.MOVIE)),
+        ProblemClass.EPISODE_WRONG_SEASON: _shows_with_multiple_seasons(index),
+        ProblemClass.ABSOLUTE_VS_SEASONAL: _long_seasons(index),
+        ProblemClass.FILENAME_UNMATCHABLE: _with_files(index),
+        ProblemClass.SERIES_ORDER_BROKEN: _books_with_series(index),
+        ProblemClass.AUTHOR_NAME_VARIANT: _authors_with_multiple_books(index),
+        ProblemClass.NARRATOR_AS_AUTHOR: _authors_with_multiple_books(index),
+        ProblemClass.MULTI_FILE_SPLIT: _multi_part_books(index),
+        ProblemClass.MISSING_SERIES: _books_with_series(index),
+        ProblemClass.ANTHOLOGY_OMNIBUS: 0,
     }
     return tuple(
         ReadinessRow(problem_class=name, eligible=counts[name], basis=basis)

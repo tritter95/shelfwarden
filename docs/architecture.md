@@ -68,6 +68,9 @@ flowchart TB
         CONFIG["config.py<br/><i>settings · secrets</i>"]
         IDS["models/ids.py<br/><i>ItemId · ExternalId · guid ladder</i>"]
         ITEM["models/item.py<br/><i>NormalizedItem · 7 kinds</i>"]
+        COMPARE["compare.py<br/><i>SupportStrength · fold ladder</i>"]
+        FIND["models/finding.py<br/><i>ProblemClass · claims 1.4</i>"]
+        EVID["models/evidence.py<br/><i>Source · evidence_id</i>"]
     end
 
     subgraph acquisition["acquisition — the MCP extraction boundary"]
@@ -90,6 +93,7 @@ flowchart TB
     subgraph measurement["measurement — Phase 0, the deliverable"]
         EXPORT["evals/export.py<br/><i>the deterministic slice</i>"]
         CENSUS["evals/census.py<br/><i>two tiers, each labelled</i>"]
+        SCREENM["evals/screen.py<br/><i>11 predicates · 4 statuses</i>"]
         CORRUPT["evals/corrupt/<br/><i>planned 0.5</i>"]
         TRUTH["evals/truth.py<br/><i>planned 0.6</i>"]
         SCORE["evals/score.py<br/><i>planned 0.8 — the gate</i>"]
@@ -118,6 +122,18 @@ flowchart TB
     EXPORT --> CENSUS
     EXPORT --> CONFIG
     CLI --> EXPORT
+    CLI --> SCREENM
+    COMPARE --> IDS
+    CENSUS --> COMPARE
+    CENSUS --> FIND
+    SCREENM --> COMPARE
+    SCREENM --> EXPORT
+    SCREENM --> FIND
+    SCREENM --> EVID
+    EVID --> CANON
+    VALID -.planned.-> COMPARE
+    CORRUPT -.planned.-> COMPARE
+    SCORE -.planned.-> COMPARE
     CORRUPT -.planned.-> ITEM
     SCORE -.planned.-> TRUTH
 
@@ -234,10 +250,14 @@ a corruption that mutated in place could lose its own audit trail.
 ### The export, and the two things it refuses to do
 
 The export is the step that turns a live, mutable, network-dependent server into a
-file that does not change. It writes one directory — `items.jsonl`, `manifest.json`,
-`census.json`, `census.md` — built in a temp directory and moved into place with a
-single `os.replace`, so an interrupted run leaves nothing rather than something
-plausible.
+file that does not change. It writes one directory — `items.jsonl`, `roots.jsonl`,
+`manifest.json`, `census.json`, `census.md` — built in a temp directory and moved
+into place with a single `os.replace`, so an interrupted run leaves nothing rather
+than something plausible.
+
+`roots.jsonl` is the population index, added in 0.45: every root stub in every
+supported section, not just the sampled ones. It exists because an absence claim
+scoped to a slice is not an absence claim about the library — see below.
 
 Two refusals shape it more than any feature does.
 
@@ -263,6 +283,48 @@ fetched and carries `coverage: {records, population}` on every block. Its
 flagged `advisory: true` on every row: it does not verify that any item is free of
 a problem. That is the mechanical screen in 0.45, and reading a readiness count as
 a `no_action` label would make the should-not-touch slice unfalsifiable.
+
+### The screen, and what `guarded` actually claims
+
+"This item has no problems" is an open-world claim and cannot be verified. "This
+item does not have problem P" can be. `evals/screen.py` runs eleven LLM-free
+predicates over an export using the same comparators the scorer and the validator
+use, and emits `guarded_classes` / `unguarded_classes` per item. A finding in a
+guarded class is a false positive; a finding in an unguarded class scores
+**`unverified`** — counted and reported, never pass or fail. That distinction is
+what stops the project from training itself to suppress true detections.
+
+Four properties carry the design.
+
+**Four statuses, not two.** `pass` / `fail` / `not_applicable` / `unavailable`, and
+neither of the last two counts as a pass. "A movie has no season" and "nobody has
+asked TMDB yet" are different facts. That single rule is what lets the authority
+tier ship as an `AuthorityIndex` protocol with a `NullAuthority` default: six of
+the eleven predicates report `unavailable` until step 1.1, with no conditional
+logic anywhere.
+
+**Three verdicts, not two.** `guarded` (≥3 applicable checks, all passing),
+`failed` (a real-slice candidate, carrying the failing predicate and its evidence),
+and `insufficient` — fewer than three applicable checks. The last is a coverage
+metric on the screen itself, and it is the number to read first.
+
+**Uniqueness is claimed over the population, never the slice.** Three predicates
+are absence claims. Scoped to `items.jsonl`, an item whose duplicate was simply not
+sampled would be marked guarded, and the agent's correct finding on it would score
+as a false positive — the headline metric inverted, on the one class the local tier
+looks strongest at. So they read `roots.jsonl`, and where that file is absent they
+report `unavailable` rather than quietly narrowing their scope.
+
+**Guard coverage per class is published, not footnoted.** With no authority tier
+the screen guards seven of fifteen classes, so `fp_rate_snt` has to be able to
+state its own denominator. `screen.json` carries the per-class table, the blocking
+scheme used for author-name twins with the number of pairs it did *not* compare,
+and the author-twin threshold as a sweep rather than a chosen constant.
+
+The screen never writes into the export directory — 0.4's byte-identity is a gate,
+and a screen lands in `datasets/screens/<export_id>/` bound to its source by
+`items_sha256`. Loading one against a different export raises: a `guarded` label
+carried onto another export is a wrong label with a plausible provenance.
 
 ---
 
@@ -520,6 +582,9 @@ because it was verified to change the bytes:
 | plexapi returns guids in XML order | Sorted at construction; stored as tuples |
 | `Counter.most_common()` and `set` iteration order are hash-seed dependent | Every aggregation sorted by an explicit total order — count descending, then key ascending — and the determinism test forks with `PYTHONHASHSEED` 0 and 1, since one process cannot see this at all |
 | `canonical_json` sorts mapping keys, so a count-ordered dict does not survive the round trip | Ordering a human reads is re-derived when `census.md` is rendered, never inherited from the stored dict |
+| `SequenceMatcher.ratio()` is not symmetric — 9228 asymmetric pairs over a 3-letter alphabet | Every comparator takes `(observed, authority)` in that order, pinned by a test |
+| `autojunk=True` (the default) returns 0.0033 where 0.5 is the answer, once the second string reaches 200 characters | `autojunk=False` passed explicitly at every construction site |
+| `casefold()` does not preserve NFC, and `FilePart.path` is deliberately un-normalized | `fold_text` normalizes **after** folding; an NFD fixture proves the door is real |
 
 The plexapi layer contributed two more, both of which **fail open** — the library's
 config helpers prefer a permissive default to an error:
@@ -592,7 +657,7 @@ values, because a single-process comparison cannot see hash-order leakage at all
 | 0.2 Normalized model | ✅ | 7 media kinds, guid ladder, canonical serializer |
 | 0.3 Read-only provider | ✅ | `LibraryProvider`, `PlexLibrary`, session, audiobook detection |
 | 0.4 Export + census | ✅ | Deterministic `items.jsonl` + manifest, lock state, part ids, two-tier census incl. unknown guids, `provider_info()`, 6th import contract |
-| 0.45 Comparators + screen | ⬜ | Shared comparator library; LLM-free verification |
+| 0.45 Comparators + screen | ✅ | `compare.py` as a top-level leaf (7th import contract); 11 predicates, 4 statuses, 3 verdicts; population-scoped uniqueness via `roots.jsonl`; `AuthorityIndex` seam; guard coverage published per class |
 | 0.5 Corruption functions | ⬜ | 15 problem classes, each with a detectability witness |
 | 0.6 Truth schema + generator | ⬜ | Semantic case ids, composition config |
 | 0.7 SnapshotLibrary | ⬜ | Same protocol, same taxonomy |

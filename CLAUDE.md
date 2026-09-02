@@ -102,6 +102,10 @@ Do not "fix" these — each is deliberate and the reasoning is in `docs/developm
 - `PRAGMA foreign_keys=ON` on every connection — it is per-connection and off by default.
 - Both `container_start` **and** `maxresults` on every plexapi page call — `container_start` alone still walks the entire remaining result set.
 - `locked=` passed explicitly to every plexapi edit helper — the default is `True`, which silently pins the field against future agent refreshes.
+- `SequenceMatcher(..., autojunk=False)` on **every** construction — the default silently returns 0.0033 where the honest answer is 0.5, once the second string reaches 200 characters. Summaries reach it.
+- Every comparator taking `(observed, authority)` **in that order**, with a test pinning an asymmetric pair — `SequenceMatcher.ratio()` is not symmetric.
+- `fold_text` normalizing to NFC *after* casefolding, and using NFKC where `canonical_text` uses NFC — casefolding does not preserve NFC, and `FilePart.path` is deliberately un-normalized.
+- `compare.py` at the top level rather than in `evals/` — `agent/validate.py` is a consumer, and the agent must not import the answer-key package across the Phase 5 MCP seam.
 - `search_metadata(source=...)` instead of separate `search_tmdb`/`search_tvdb` tools — deliberate consolidation per spec §9.
 - `lookup_audiobook` instead of the spec's `search_audnexus` — **Audnexus has no book-search endpoint**; the tool encapsulates an ASIN resolution ladder in code.
 - `DerivedClaim` carrying no `asserted_value` — the validator recomputes it from the named rule. The model chooses the rule and inputs; code decides the truth.

@@ -76,11 +76,28 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] **Done when:** re-running the export against an unchanged library is byte-identical, and the census informs slice targets — asserted in-process *and* across two `PYTHONHASHSEED` values in forked subprocesses, since a same-process comparison cannot see hash-order leakage at all
 
 ### 0.45 Shared comparators + mechanical screen
-- [ ] `evals/compare.py` — the comparator library shared by scorer, screen, and detectability witness (`SupportStrength`, not bool)
-- [ ] `evals/screen.py` — LLM-free per-predicate verification over the export
-- [ ] Screen emits `guarded_classes` / `unguarded_classes` per item; requires ≥3 applicable checks, all passing
-- [ ] Items failing the screen become candidates for the curated real slice
-- [ ] **Done when:** the screen classifies the full export and its output feeds both the should-not-touch slice and real-slice labeling
+
+> Design detail, the six verified findings behind it, and the seven decisions taken: [`plans/step-0.45-comparators-screen.md`](./plans/step-0.45-comparators-screen.md).
+
+- [x] `compare.py` — the comparator library shared by scorer, screen, detectability witness, **and the Phase 1 validator**. Top-level, not `evals/`: `agent/validate.py` is a consumer, and the agent must not import the answer-key package across the Phase 5 MCP seam (correction recorded in `implementation-plan.md` §7)
+- [x] `SupportStrength` as a `StrEnum` (`EXACT|ALIAS|NORMALIZED|FUZZY|NONE`) with an explicit rank table — never bool, and never an `IntEnum` that writes bare integers into every dataset
+- [x] Comparators take `(observed, authority)` **in that order**, pinned by a test: `difflib.SequenceMatcher.ratio()` is not symmetric (verified: 9228 asymmetric pairs over a 3-letter alphabet; `ratio('ab','bacb')` is 0.667 one way and 0.333 the other)
+- [x] `autojunk=False` passed explicitly on every `SequenceMatcher` — the default silently returns 0.0033 where the honest answer is 0.5, for any comparison where the second string reaches 200 characters. Summaries reach it
+- [x] Fold ladder normalizes to NFC **after** casefolding, not before — `casefold()` does not preserve NFC, and `FilePart.path` is deliberately un-normalized, so NFD text reaches the comparators through the filename checks
+- [x] `evals/screen.py` — LLM-free per-predicate verification over the export
+- [x] Screen emits `guarded_classes` / `unguarded_classes` per item; requires ≥3 applicable checks, all passing. `MIN_APPLICABLE_CHECKS` is a constant with no CLI flag — a flag makes the slice's admission standard a runtime argument
+- [x] Four predicate statuses, not two: `pass` / `fail` / `not_applicable` / `unavailable`. Neither of the last two counts as a pass, which is what lets the authority tier be deferred with no conditional logic
+- [x] Three verdicts, not two: `guarded` / `failed` / `insufficient`. The `insufficient` count is a coverage metric on the screen itself
+- [x] Uniqueness predicates run at **population** scope, not slice scope — a duplicate that simply was not sampled would mark an item guarded and score the agent's correct finding as a false positive. Forces `roots.jsonl` on the export (manifest `schema_version` 1 → 2)
+- [x] Authority tier shipped as an `AuthorityIndex` protocol + `NullAuthority`: `sources/` is step 1.1, so six of eleven predicates report `unavailable` and nine of fifteen classes stay unguarded until then. **Guard coverage per class is a published number**, so `fp_rate_snt` states its own denominator
+- [x] Author-twin detection blocks on a token-set key; the blocking scheme, bucket count, and comparison count are all recorded (no silent caps)
+- [x] `models/finding.py` gains `ProblemClass` and `models/evidence.py` gains `Source` + `evidence_id()` — the minimum the screen needs, at the paths the implementation plan already assigns them
+- [x] Items failing the screen become candidates for the curated real slice, carrying the failing predicate and its evidence
+- [x] Screen writes to `datasets/screens/<export_id>/`, never into the export directory, bound to its source by `items_sha256`
+- [x] New import contract: `compare` may not import `agent`, `evals`, `library`, or `sources`
+- [x] Local tier guards **seven** classes, not the six the plan predicted: `absolute_vs_seasonal` is guarded weakly by `episode_numbering_contiguous`, which is local. The count is computed from `GUARD_TABLE`, never asserted in prose
+- [x] `screen.json` carries no timestamp — a screen is a pure function of the export and the code that read it, and byte-identity is the cheapest proof of that
+- [x] **Done when:** the screen classifies the full export and its output feeds both the should-not-touch slice and real-slice labeling
 
 ### 0.5 Corruption functions
 Movies / TV

@@ -1,0 +1,17 @@
+<!-- macOS filesystems hand out NFD, and `part.file` comes from the filesystem.
+     This fixture is the only one where the title is composed (NFC) and the path
+     is decomposed (NFD): the exact combination `compare.fold_text` exists to
+     handle, and the one door NFD text uses to reach the comparators. Every other
+     Plex fixture here is NFC throughout, so without this one the trap is
+     untested and looks impossible. -->
+<Video ratingKey="1702" key="/library/metadata/1702" type="movie"
+       title="Amélie" year="2001"
+       summary="A shy waitress decides to change the lives of those around her."
+       guid="plex://movie/5d776b9ad0a1a5001f4b5b1d"
+       addedAt="1704067200" updatedAt="1704067200">
+  <Guid id="tmdb://194"/>
+  <Media id="9" container="mkv" videoResolution="1080">
+    <Part id="10" file="/media/Movies/Amélie (2001)/Amélie (2001).mkv"
+          size="8000000000" container="mkv"/>
+  </Media>
+</Video>

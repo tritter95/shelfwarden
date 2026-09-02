@@ -63,8 +63,10 @@ shelfwarden/
   pyproject.toml            # uv project, [project.scripts] shelfwarden = "shelfwarden.cli:app"
   .python-version           # 3.13
   src/shelfwarden/
-    cli.py                  # Typer app: scan / diff / apply / revert / eval / export
+    cli.py                  # Typer app: scan / diff / apply / revert / eval / export / screen
     config.py               # settings from env + ~/.config/shelfwarden/config.toml
+    canonical.py            # the one serializer  (0.2)
+    compare.py              # the shared comparators — a leaf, see the §7 correction  (0.45)
     models/
       item.py               # NormalizedItem + subtypes — the canonical media model
       finding.py            # Finding, Claim, Citation, RepairProposal, ProblemClass
@@ -100,6 +102,8 @@ shelfwarden/
       migrations/
     evals/
       export.py             # pull the real slice from Plex -> ground truth snapshot
+      census.py             # what the library contains, two tiers
+      screen.py             # LLM-free per-predicate verification -> guarded/unguarded classes
       corrupt/
         __init__.py         # registry of corruption functions
         movies.py  tv.py  audiobooks.py
@@ -284,6 +288,8 @@ What was verified is then recorded, and forbid-all is narrowed to it:
   "unguarded_classes": ["alternate_cut","duplicate_quality"]
 }
 ```
+
+(The illustrative JSON above lists `duplicate_quality` as unguarded while the predicate list two paragraphs up includes *"no other item sharing normalized (title, year)"*, which guards that class and nothing else. The prose is normative: the class is guarded whenever that predicate runs at population scope. Noted rather than silently resolved — see step 0.45, Finding 6.)
 
 A finding in a `guarded_class` is a false positive. A finding in an `unguarded_class` is scored **`unverified`** — counted and reported, never pass or fail. That is what stops the project from training itself to suppress true detections. Human labeling cost is zero: items failing the screen are discarded from the slice and become candidates for the curated real slice instead. Any finding produced on a should-not-touch item during a real run enters an adjudication queue; if the agent turns out to be right, the case is demoted and marked `"method":"human_refuted"`. The dataset self-heals, and **refutation rate becomes a published dataset-quality metric.**
 
@@ -516,11 +522,20 @@ Validator false-rejection rate is a headline metric alongside the spec's false-p
 | 0.2 | Normalized model | `models/item.py` | Round-trips to canonical JSON; unit tests on `ExternalId` parsing for **both** new-agent `guids` and legacy `com.plexapp.agents.*` guid forms |
 | 0.3 | `PlexLibrary` read-only + audiobook detection | `library/base.py`, `library/plex.py`, `library/audiobook.py` | Connects; `autoreload=false`; paging passes both `container_start` and `maxresults`; **a test asserts the protocol exposes no mutating method** |
 | 0.4 | Export + census | `config.py`, `evals/export.py`, `evals/census.py`, `cli.py:export` | `shelfwarden export --count 200` writes a deterministic `items.jsonl` + manifest + two-tier census; re-run is byte-identical, including across two `PYTHONHASHSEED` values |
-| 0.45 | Comparators + mechanical screen | `evals/compare.py`, `evals/screen.py` | The comparator library the scorer, screen, and detectability witness all share; screen classifies export items into guarded/unguarded classes |
+| 0.45 | Comparators + mechanical screen | `compare.py` (see correction), `evals/screen.py` | The comparator library the scorer, screen, and detectability witness all share; screen classifies export items into guarded/unguarded classes |
 | 0.5 | Corruption functions + detectability | `evals/corrupt/*.py` | All 15 classes implemented; each emits a `DetectabilityWitness`; no-op `FieldChange` raises; the `apply_reverse(changes) == ground_truth_item` invariant holds byte-for-byte |
 | 0.6 | Truth schema + generator + composition config | `evals/truth.py`, `evals/generate.py`, `composition.toml` | `generate --count 200 --seed N` is reproducible; semantic `case_id`s stable across regeneration; per-cell targets and rejected cases both written out |
 | 0.7 | `SnapshotLibrary` | `library/snapshot.py` | Serves the corrupted dataset through the identical `LibraryProvider` protocol; same error taxonomy |
 | 0.8 | Scorer | `evals/score.py`, `evals/report.py` | Scores a hand-written proposed repair set against the truth file via postcondition comparison and emits the metric table — **this is the gate** |
+
+> **Correction, recorded in step 0.45.** The 0.45 row above originally placed the comparator library at `evals/compare.py`. It moves to top-level **`compare.py`**, a leaf beside `canonical.py`. The reason is its consumer list: the screen (0.45), the detectability witness (0.5), and the scorer (0.8) are all in `evals/` — but the *support* check and `bind()` in §6's validator are `agent/validate.py` (step 1.4). Leaving the file in `evals/` makes the agent import the package holding the answer key, and makes the Phase 5 MCP extraction carry `evals/` with it. That is the same boundary the existing `agent/tools/ -> evals` contract already protects, one module up. A new contract forbids `compare` from importing `agent`, `evals`, `library`, or `sources`.
+>
+> Three further changes 0.45 forces, all recorded in `plans/step-0.45-comparators-screen.md`:
+>
+> 1. **The export gains `roots.jsonl`** and the manifest bumps to `schema_version` 2. Three of the screen's eleven predicates are uniqueness claims, and `items.jsonl` is a *slice* — "no other item here shares this title and year" is not a statement about the library. A duplicate that was simply not sampled would mark an item guarded, and the agent's correct finding on it would score as a false positive. The population walk already visits every root and `ItemStub` already carries the four needed fields, so this costs one file and no additional requests.
+> 2. **The authority tier ships as a protocol, not an implementation.** Six of the eleven predicates need TMDB/TVDB/Audnexus, and `sources/` is step 1.1. `evals/screen.py` defines an `AuthorityIndex` protocol with a `NullAuthority` default; every authority predicate then reports `unavailable` — a status distinct from both `pass` and `not_applicable` — and nine of the fifteen problem classes stay in `unguarded_classes` until 1.1 lands. This needs no conditional logic anywhere, because `unavailable` simply never counts toward a guard. The obligation it creates is that **guard coverage per class is a published number**, so `fp_rate_snt` states its own denominator rather than reading as if it covered all fifteen.
+>
+> 3. **The local tier guards seven classes, not six.** The step plan counted `duplicate_quality`, `missing_metadata`, `multi_file_split`, `author_name_variant`, `filename_unmatchable`, and `episode_wrong_season`. It undercounts by one: `absolute_vs_seasonal` is guarded — weakly, on structure alone — by `episode_numbering_contiguous`, which is a local predicate. The number is computed from `GUARD_TABLE` and published per class in `screen.json`, so no prose count is load-bearing.
 
 **Phase 1 — read-only agent, no framework.** Gate: 20+ eval cases run end to end and produce a scored report. The score may be bad; it must exist.
 

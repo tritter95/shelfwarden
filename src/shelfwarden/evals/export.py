@@ -50,9 +50,11 @@ from shelfwarden.models.item import (
     NormalizedItem,
     SectionRef,
     dump_item,
+    load_item,
 )
 
 ITEMS_FILE = "items.jsonl"
+ROOTS_FILE = "roots.jsonl"
 MANIFEST_FILE = "manifest.json"
 CENSUS_FILE = "census.json"
 CENSUS_MARKDOWN_FILE = "census.md"
@@ -159,13 +161,19 @@ class ExportCounts(_Frozen):
 class Manifest(_Frozen):
     """What produced these records.
 
+    `schema_version` is 2 from step 0.45, which added `roots.jsonl` and the
+    `roots_sha256` that binds it. `roots_sha256` is optional so a version-1
+    export still loads -- a screen run against one reports its uniqueness
+    predicates as `unavailable` rather than failing to parse the manifest, which
+    is the difference between an honest gap and a broken tool.
+
     `request_params` is the **effective** parameter set -- what plexapi actually
     puts on the wire -- not our override dict. Recording the override dict would
     understate the request while looking authoritative; see
     `library.plex.effective_request_params`.
     """
 
-    schema_version: int = 1
+    schema_version: int = 2
     export_id: str
     created_at: datetime
     shelfwarden_version: str
@@ -182,6 +190,7 @@ class Manifest(_Frozen):
     dropped: tuple[DroppedFamily, ...]
     items_sha256: str
     census_sha256: str
+    roots_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -381,6 +390,21 @@ def render_items(items: Iterable[NormalizedItem]) -> bytes:
     return b"".join(canonical_json(dump_item(item)) + b"\n" for item in items)
 
 
+def render_roots(roots: Iterable[ItemStub]) -> bytes:
+    """The population index: every root stub in every supported section.
+
+    Written because three of the mechanical screen's predicates are *uniqueness*
+    claims -- "no other item shares this normalized (title, year)" -- and
+    `items.jsonl` is a **slice**. An item whose duplicate simply was not sampled
+    would be marked guarded against `duplicate_quality`, and the agent's correct
+    finding on it would then score as a false positive: the metric inverted, in
+    the one direction this project has forbidden. The population walk already
+    visits every root and `ItemStub` already carries the four fields a
+    uniqueness index needs, so this costs one file and no extra requests.
+    """
+    return b"".join(canonical_json(stub.model_dump(mode="json")) + b"\n" for stub in roots)
+
+
 # -- the export -----------------------------------------------------------
 
 
@@ -461,6 +485,19 @@ def run_export(
     ordered_populations = sorted(
         ((section.section_id, populations[section.section_id]) for section in supported),
         key=lambda entry: census_module.section_sort_key(entry[0]),
+    )
+    # Every root in every supported section, in the export's own order. Built
+    # here rather than from `families` because the point of the file is that it
+    # is the *population*, not the slice -- see `render_roots`.
+    roots = tuple(
+        sorted(
+            (
+                stub
+                for section_id, _ in ordered_populations
+                for stub in stubs_by_section[section_id]
+            ),
+            key=_stub_sort_key,
+        )
     )
     if census_only:
         quotas = {section_id: 0 for section_id, _ in ordered_populations}
@@ -543,6 +580,7 @@ def run_export(
     )
 
     items_bytes = render_items(items)
+    roots_bytes = render_roots(roots)
     census_bytes = canonical_json(census.model_dump(mode="json"))
     git_sha, git_dirty = git_state(git_root)
 
@@ -585,18 +623,22 @@ def run_export(
         dropped=tuple(sorted(dropped, key=lambda d: d.root)),
         items_sha256=_digest(items_bytes),
         census_sha256=_digest(census_bytes),
+        roots_sha256=_digest(roots_bytes),
     )
     manifest_bytes = canonical_json(manifest.model_dump(mode="json"))
     markdown_bytes = census_module.render_markdown(census).encode("utf-8")
 
     payloads = {
         ITEMS_FILE: items_bytes,
+        # Written under --census-only too, where it is the only item-shaped
+        # artifact and is what makes that mode useful to the screen at all.
+        ROOTS_FILE: roots_bytes,
         MANIFEST_FILE: manifest_bytes,
         CENSUS_FILE: census_bytes,
         CENSUS_MARKDOWN_FILE: markdown_bytes,
     }
     _assert_no_secrets(payloads, secrets)
-    _write_atomically(out, payloads)
+    write_atomically(out, payloads)
 
     return ExportResult(directory=out, manifest=manifest, census=census, items=items)
 
@@ -626,7 +668,7 @@ def _assert_no_secrets(payloads: dict[str, bytes], secrets: tuple[str, ...]) -> 
             )
 
 
-def _write_atomically(out: Path, payloads: dict[str, bytes]) -> None:
+def write_atomically(out: Path, payloads: dict[str, bytes]) -> None:
     """Build beside the target, then move it into place in one step.
 
     An interrupted export must leave nothing rather than something plausible: a
@@ -648,6 +690,29 @@ def _write_atomically(out: Path, payloads: dict[str, bytes]) -> None:
 
 def load_manifest(directory: Path) -> Manifest:
     return Manifest.model_validate_json((directory / MANIFEST_FILE).read_bytes())
+
+
+def load_items(directory: Path) -> tuple[NormalizedItem, ...]:
+    """Every record in `items.jsonl`, in file order.
+
+    File order *is* the record order (`RECORD_ORDER`), so a reader never has to
+    re-sort and can rely on a family arriving together.
+    """
+    payload = (directory / ITEMS_FILE).read_bytes()
+    return tuple(load_item(line) for line in payload.splitlines() if line.strip())
+
+
+def load_roots(directory: Path) -> tuple[ItemStub, ...]:
+    """The population index. Raises `FileNotFoundError` on a version-1 export.
+
+    The caller decides what an absent population index means; for the screen it
+    means the uniqueness predicates are `unavailable`, never that they quietly
+    fall back to slice scope.
+    """
+    payload = (directory / ROOTS_FILE).read_bytes()
+    return tuple(
+        ItemStub.model_validate_json(line) for line in payload.splitlines() if line.strip()
+    )
 
 
 def load_census(directory: Path) -> census_module.Census:
@@ -673,6 +738,7 @@ __all__ = [
     "DEFAULT_SEED",
     "ITEMS_FILE",
     "MANIFEST_FILE",
+    "ROOTS_FILE",
     "VOLATILE_MANIFEST_FIELDS",
     "DroppedFamily",
     "ExportError",
@@ -687,8 +753,12 @@ __all__ = [
     "git_state",
     "list_all",
     "load_census",
+    "load_items",
     "load_manifest",
+    "load_roots",
     "render_items",
+    "render_roots",
     "run_export",
     "select",
+    "write_atomically",
 ]

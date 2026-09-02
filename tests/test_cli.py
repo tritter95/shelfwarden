@@ -11,7 +11,7 @@ from tests.evals.conftest import FakeLibrary
 
 runner = CliRunner()
 
-TOP_LEVEL_COMMANDS = ["export", "scan", "diff", "apply", "revert", "eval", "db"]
+TOP_LEVEL_COMMANDS = ["export", "screen", "scan", "diff", "apply", "revert", "eval", "db"]
 
 
 def test_help_lists_every_top_level_command():
@@ -163,7 +163,9 @@ class TestExportConfiguration:
 
 
 class TestExportCommand:
-    def test_it_writes_the_four_files(self, fake_plex, tmp_path):
+    def test_it_writes_the_five_files(self, fake_plex, tmp_path):
+        """`roots.jsonl` joined the set in step 0.45 -- the population index the
+        screen's uniqueness predicates need. See export.render_roots."""
         out = tmp_path / "e"
         result = runner.invoke(app, ["export", "--out", str(out)])
         assert result.exit_code == ExitCode.OK, result.output
@@ -172,6 +174,7 @@ class TestExportCommand:
             "census.md",
             "items.jsonl",
             "manifest.json",
+            "roots.jsonl",
         ]
 
     def test_census_only_fetches_no_items(self, fake_plex, tmp_path):
@@ -281,3 +284,51 @@ class TestExportFailure:
         assert result.exit_code == ExitCode.ERROR
         assert "no supported sections" in result.output
         assert not out.exists()
+
+
+# -- screen (step 0.45) ---------------------------------------------------
+
+
+@pytest.fixture
+def export_dir(tmp_path):
+    """A real export, written offline through the same code path the CLI uses."""
+    return export_module.run_export(FakeLibrary.build(), tmp_path / "export", count=200).directory
+
+
+class TestScreenCommand:
+    def test_it_writes_a_screen_beside_the_export_not_inside_it(self, export_dir, tmp_path):
+        out = tmp_path / "screen"
+        result = runner.invoke(app, ["screen", str(export_dir), "--out", str(out)])
+        assert result.exit_code == ExitCode.OK, result.output
+        assert sorted(path.name for path in out.iterdir()) == ["screen.json", "screen.md"]
+        assert not (export_dir / "screen.json").exists()
+
+    def test_it_reports_the_three_verdicts_and_the_authority_tier(self, export_dir, tmp_path):
+        result = runner.invoke(app, ["screen", str(export_dir), "--out", str(tmp_path / "screen")])
+        assert "guarded" in result.output
+        assert "insufficient" in result.output
+        assert "authority tier is 'none'" in result.output
+
+    def test_screening_a_census_only_export_names_its_next_action(self, tmp_path):
+        """practices §5.4: a correctable error says what to do instead."""
+        directory = export_module.run_export(
+            FakeLibrary.build(), tmp_path / "census", census_only=True
+        ).directory
+        result = runner.invoke(app, ["screen", str(directory), "--out", str(tmp_path / "screen")])
+        assert result.exit_code == ExitCode.ERROR
+        assert "--census-only" in result.output
+        assert "shelfwarden export" in result.output
+
+    def test_a_directory_that_is_not_an_export_is_an_error_not_a_traceback(self, tmp_path):
+        (tmp_path / "empty").mkdir()
+        result = runner.invoke(app, ["screen", str(tmp_path / "empty")])
+        assert result.exit_code == ExitCode.ERROR
+        assert "not an export directory" in result.output
+
+    def test_a_missing_population_index_is_reported_rather_than_absorbed(
+        self, export_dir, tmp_path
+    ):
+        (export_dir / export_module.ROOTS_FILE).unlink()
+        result = runner.invoke(app, ["screen", str(export_dir), "--out", str(tmp_path / "screen")])
+        assert result.exit_code == ExitCode.OK, result.output
+        assert "no roots.jsonl" in result.output

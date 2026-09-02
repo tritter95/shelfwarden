@@ -16,6 +16,7 @@ import typer
 from shelfwarden import __version__
 from shelfwarden.config import ConfigError, load_settings, require_plex
 from shelfwarden.evals import export as export_module
+from shelfwarden.evals import screen as screen_module
 from shelfwarden.library.base import LibraryError
 from shelfwarden.library.plex import PlexLibrary, effective_request_params
 from shelfwarden.models.item import FetchProfile
@@ -211,6 +212,65 @@ def _report_export(result: export_module.ExportResult, *, census_only: bool) -> 
         f"export id {manifest.export_id}"
     )
     typer.echo(f"Census: {result.directory / export_module.CENSUS_MARKDOWN_FILE}")
+
+
+@app.command()
+def screen(
+    ctx: typer.Context,
+    export_dir: Annotated[
+        Path, typer.Argument(help="Export directory written by `shelfwarden export`.")
+    ],
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Where to write the screen. Defaults to datasets/screens/<id>."),
+    ] = None,
+) -> None:
+    """Verify mechanically which problems each exported item does *not* have.
+
+    LLM-free, and it never writes into the export directory: a screen lands in
+    `datasets/screens/<export_id>/` bound to its source by `items_sha256`.
+
+    Six of the eleven predicates need an external metadata source, which is
+    roadmap step 1.1. Until then they report `unavailable` -- a status distinct
+    from both `pass` and `not_applicable`, and one that never counts toward a
+    guard. Read `screen.md`'s guard-coverage table for what this run actually
+    verified, and its `insufficient` count for how much is waiting on 1.1.
+    """
+    try:
+        manifest = export_module.load_manifest(export_dir)
+    except FileNotFoundError as exc:
+        typer.echo(
+            f"{export_dir} is not an export directory: no {export_module.MANIFEST_FILE}. "
+            "Point this at a directory written by `shelfwarden export`.",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    directory = out or screen_module.default_directory(manifest.export_id)
+    try:
+        result = screen_module.run_screen(export_dir, directory)
+    except screen_module.ScreenError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    counts = result.counts
+    typer.echo(f"Wrote {directory}")
+    typer.echo(
+        f"{counts.items} item(s): {counts.guarded} guarded, "
+        f"{counts.failed} failed (real-slice candidates), "
+        f"{counts.insufficient} insufficient"
+    )
+    guarded_classes = [row for row in result.guard_coverage if row.guarded]
+    typer.echo(
+        f"Guard coverage: {len(guarded_classes)} of {len(result.guard_coverage)} problem "
+        f"class(es) verified on at least one item; authority tier is {result.authority!r}."
+    )
+    if not result.source.population_index:
+        typer.echo(
+            "  no roots.jsonl in this export: uniqueness predicates reported "
+            "unavailable rather than being scoped to the slice. Re-run `shelfwarden export`."
+        )
+    typer.echo(f"Report: {directory / screen_module.SCREEN_MARKDOWN_FILE}")
 
 
 @app.command()

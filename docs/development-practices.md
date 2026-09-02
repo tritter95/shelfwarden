@@ -169,6 +169,23 @@ Two policy decisions the serializer cannot make for you, both verified to change
 
 And one that bites the moment a timestamp appears: **datetimes serialize by representation, not by instant.** `2024-01-01T05:00:00Z` and `2024-01-01T00:00:00-05:00` are the same moment and different bytes; a naive datetime produces a third form with no offset. Coerce to aware UTC at parse time (`models.item.UtcDatetime`) or byte-identical export becomes a function of the server's timezone setting.
 
+### 2.6 Comparison is not serialization
+
+`shelfwarden/compare.py` (step 0.45) holds every "are these two strings the same thing?" decision in the project — the screen, the detectability witness, the scorer, and the validator's *support* and referent-binding checks all call it, which is why it is a **top-level leaf** rather than living in `evals/`: `agent/validate.py` is a consumer, and the agent must not import the package holding the answer key across the Phase 5 MCP seam. An import contract forbids `compare` from importing `agent`, `evals`, `library`, or `sources`.
+
+Three verified traps, each a stdlib default that fails *quietly*:
+
+- **`difflib.SequenceMatcher.ratio()` is not symmetric.** Brute-forced over a three-letter alphabet: 9228 asymmetric pairs at lengths 1–5, with `ratio('ab', 'bacb')` = 0.667 one way and 0.333 the other. Every comparator therefore takes **`(observed, authority)` in that order**, the parameter names say so, and a test pins a known-asymmetric pair. Two callers that disagree about argument order share a name and not a result, and the disagreement surfaces as a validator false-rejection rate that will not reconcile with the screen's guard coverage.
+- **`autojunk=True` is the default and destroys long-text comparison.** It excludes any element appearing in more than 1% of the second sequence once that sequence reaches 200 characters. Verified: `"a" * 300` against `"ab" * 150` scores **0.0033** by default and **0.5** with `autojunk=False` — a 150× difference, switching on partway through a dataset as summaries get longer. Pass `autojunk=False` explicitly at every construction site.
+- **`casefold()` does not preserve NFC.** `'Å'` decomposed casefolds to a decomposed `'å'`; `'İ'` expands to `i` + U+0307. The canonical caseless match is `NFC(casefold(NFD(x)))`, so `fold_text` normalizes **last**, not first. This is not theoretical: §2.5 exempts `FilePart.path` from NFC on purpose, so decomposed text reaches the comparators through exactly one door — the filename checks — and `tests/fixtures/plex/movie_nfd_path.xml` exists to prove that door is real.
+
+Two more rules that are project-specific rather than stdlib traps:
+
+- **`fold_text` uses NFKC; `canonical_text` uses NFC.** Compatibility normalization folds `Ⅻ` → `XII` and `ﬁ` → `fi`, which is right for a *comparison* and wrong for a value being hashed. The two functions must not be unified, and a comment in each says so. Known ceiling: `Æ` and `œ` survive NFKD, so `Cœur` vs `Coeur` lands at FUZZY. A hand-maintained ligature table would rot; the limit is recorded instead.
+- **Comparators return `SupportStrength`, never a bool**, and a *policy* — not the comparator — turns a strength into a decision. `SCREEN_POLICY` and (from 1.4) `VALIDATOR_POLICY` share the comparators and deliberately do not share the thresholds: the screen breaks ties toward `unguarded`, because a missed guard is visible and countable; the validator breaks ties toward *accepting* a finding, because a wrong rejection costs a true detection that nothing counts. Do not refactor the asymmetry away.
+
+Series positions are compared **as strings**, always. See §5.2: Audnexus returns `"3.5"`, `int()` raises on it, and `float()` is worse because it succeeds — `3.5 == 3.50` starts being true while `"3.5" != "3.50"`, and two call sites begin disagreeing silently.
+
 ---
 
 ## 3. SQLite
@@ -541,3 +558,5 @@ The rules most easily violated by well-intentioned code, collected in one place:
 8. **No corruption ships without a detectability witness.** An unsolvable case depresses the score and hides regressions.
 9. **Silence is not escalation.** An agent that finds nothing must not score as correctly escalating.
 10. **Evidence freshness is checked before execution** — re-fetch by `query_id` and demote any auto-band repair whose backing evidence changed since approval.
+11. **An absence claim states the population it was made over.** "No other item shares this title and year" is a claim about the library, so it reads `roots.jsonl`, never the exported slice — a duplicate that was simply not sampled would mark an item guarded and score the agent's correct finding as a false positive. Where no population index exists, the predicate reports `unavailable`; it never quietly falls back to a smaller scope.
+12. **`not_applicable` and `unavailable` are different facts, and neither is a pass.** "A movie has no season" and "nobody has asked TMDB yet" cannot share a status, or coverage stops being measurable.

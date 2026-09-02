@@ -18,6 +18,7 @@ from shelfwarden.evals.export import (
     CENSUS_MARKDOWN_FILE,
     ITEMS_FILE,
     MANIFEST_FILE,
+    ROOTS_FILE,
     VOLATILE_MANIFEST_FIELDS,
     ExportError,
     allocate,
@@ -26,7 +27,9 @@ from shelfwarden.evals.export import (
     git_state,
     list_all,
     load_census,
+    load_items,
     load_manifest,
+    load_roots,
     run_export,
     select,
 )
@@ -78,6 +81,11 @@ def test_export_is_byte_identical(library, tmp_path):
     assert (first.directory / CENSUS_MARKDOWN_FILE).read_bytes() == (
         second.directory / CENSUS_MARKDOWN_FILE
     ).read_bytes()
+    # 0.45 added a fifth artifact. It is deterministic by the same rules as
+    # items.jsonl, so it belongs inside this assertion rather than beside it.
+    assert (first.directory / ROOTS_FILE).read_bytes() == (
+        second.directory / ROOTS_FILE
+    ).read_bytes()
 
 
 def test_only_created_at_is_allowed_to_differ():
@@ -103,10 +111,11 @@ def test_export_is_byte_identical_across_hash_seeds(tmp_path):
         "from pathlib import Path;"
         "from evals.conftest import FakeLibrary;"
         "from shelfwarden.evals.export import ("
-        "run_export, ITEMS_FILE, CENSUS_FILE, comparable_manifest);"
+        "run_export, ITEMS_FILE, ROOTS_FILE, CENSUS_FILE, comparable_manifest);"
         "out = Path(sys.argv[1]);"
         "run_export(FakeLibrary.build(), out, count=200);"
         "payload = (out / ITEMS_FILE).read_bytes() + (out / CENSUS_FILE).read_bytes()"
+        " + (out / ROOTS_FILE).read_bytes()"
         " + json.dumps(comparable_manifest(out), sort_keys=True).encode();"
         "print(hashlib.sha256(payload).hexdigest())"
     )
@@ -351,6 +360,78 @@ class TestRecords:
         assert len(read_items(result.directory)) == result.manifest.counts.records
 
 
+class TestPopulationIndex:
+    """`roots.jsonl`, added in step 0.45.
+
+    Three of the mechanical screen's predicates are uniqueness claims, and
+    `items.jsonl` is a slice: "no other item here shares this title and year" is
+    not a statement about the library. The population walk already visits every
+    root, so this costs one file and no extra requests.
+    """
+
+    def test_it_holds_every_root_not_only_the_sampled_ones(self, library, tmp_path):
+        result = run_export(library, tmp_path / "e", count=2, sections=(MOVIES,))
+        roots = load_roots(result.directory)
+        assert len(roots) == 8
+        assert len({str(item.item_id) for item in result.items}) == 2
+
+    def test_it_covers_every_supported_section(self, library, tmp_path):
+        result = run_export(library, tmp_path / "e", count=200)
+        roots = load_roots(result.directory)
+        assert {stub.item_id.section_id for stub in roots} == {MOVIES, SHOWS, BOOKS}
+        assert {stub.media_kind for stub in roots} == {
+            MediaKind.MOVIE,
+            MediaKind.SHOW,
+            MediaKind.AUTHOR,
+        }
+
+    def test_it_carries_the_four_fields_a_uniqueness_index_needs(self, library, tmp_path):
+        result = run_export(library, tmp_path / "e", count=200)
+        stub = next(s for s in load_roots(result.directory) if s.item_id.rating_key == "107")
+        assert (stub.title, stub.year) == ("Blade Runner", 1982)
+
+    def test_it_is_written_under_census_only_too(self, library, tmp_path):
+        """Where it is the only item-shaped artifact, and is what makes that mode
+        useful to the screen at all."""
+        result = run_export(library, tmp_path / "e", census_only=True)
+        assert (result.directory / ITEMS_FILE).read_bytes() == b""
+        assert len(load_roots(result.directory)) == 11
+
+    def test_the_manifest_binds_it_by_hash(self, library, tmp_path):
+        from hashlib import sha256
+
+        result = run_export(library, tmp_path / "e", count=200)
+        manifest = load_manifest(result.directory)
+        assert manifest.schema_version == 2
+        assert (
+            manifest.roots_sha256
+            == sha256((result.directory / ROOTS_FILE).read_bytes()).hexdigest()
+        )
+
+    def test_a_version_1_manifest_still_loads(self, library, tmp_path):
+        """So a screen run against an older export reports an honest gap rather
+        than failing to parse the manifest it was handed."""
+        result = run_export(library, tmp_path / "e", count=200)
+        raw = json.loads((result.directory / MANIFEST_FILE).read_bytes())
+        del raw["roots_sha256"]
+        raw["schema_version"] = 1
+        (result.directory / MANIFEST_FILE).write_text(json.dumps(raw))
+        assert load_manifest(result.directory).roots_sha256 is None
+
+
+class TestReaders:
+    def test_load_items_returns_the_records_in_file_order(self, library, tmp_path):
+        result = run_export(library, tmp_path / "e", count=200)
+        assert [str(item.item_id) for item in load_items(result.directory)] == [
+            str(item.item_id) for item in result.items
+        ]
+
+    def test_load_roots_round_trips_the_stubs(self, library, tmp_path):
+        result = run_export(library, tmp_path / "e", count=200)
+        roots = load_roots(result.directory)
+        assert all(stub.item_id.provider == "fake" for stub in roots)
+
+
 # -- sections and skips ---------------------------------------------------
 
 
@@ -484,6 +565,7 @@ class TestWriting:
             CENSUS_MARKDOWN_FILE,
             ITEMS_FILE,
             MANIFEST_FILE,
+            ROOTS_FILE,
         ]
 
     def test_a_duplicate_item_id_is_refused(self, tmp_path, library):
