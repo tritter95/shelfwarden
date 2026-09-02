@@ -67,7 +67,7 @@ Phases are gated. **Do not begin a phase until the previous gate is met** — se
 - **Phase 1** — read-only agent, hand-written loop, no framework.
 - **Phase 2** — guard layer, budgets, tracing, deterministic replay.
 - **Phase 3** — the repair stage, snapshots, `revert`.
-- **Phase 4** — LangGraph migration (optional, deliberate).
+- **Phase 4** — LangGraph, deliberate and measured. **LangGraph is adopted; LangChain is not** (`docs/plans/phase-4-langgraph.md`). Its 4.1 spike is the one step allowed to run out of gate order — it is non-gating, and 1.7 is the first point at which a port can be *measured* rather than merely written.
 - **Phase 5** — MCP server extraction + Temporal.
 
 Do not reach for a framework to skip a concept, and do not defer the eval harness.
@@ -109,6 +109,11 @@ Do not "fix" these — each is deliberate and the reasoning is in `docs/developm
 - `search_metadata(source=...)` instead of separate `search_tmdb`/`search_tvdb` tools — deliberate consolidation per spec §9.
 - `lookup_audiobook` instead of the spec's `search_audnexus` — **Audnexus has no book-search endpoint**; the tool encapsulates an ASIN resolution ladder in code.
 - `DerivedClaim` carrying no `asserted_value` — the validator recomputes it from the named rule. The model chooses the rule and inputs; code decides the truth.
+- `FieldChange.before`/`after` **read back from the mutated item** rather than taken from the caller's intent — validation rewrites values (NFD title → NFC, guids re-sorted, `locked_fields` deduplicated), so a change built from intent describes a mutation that did not happen.
+- The no-op check comparing **canonical bytes**, not Python equality — `True == 1` while `b'true' != b'1'`, and the byte-identity gate downstream is what the check exists to protect.
+- A **per-case** RNG rather than one seeded stream — `random.sample` is not prefix-stable in `k`, so a shared stream makes every case a function of how many came before it, and a one-case composition edit resets the whole baseline.
+- `*` legal in a `must_not_change` **selector** and illegal in a `FieldChange.path` — a change addresses one location because its reverse writes one value; a constraint may address many.
+- `/parent` and `/item_id` recorded whole rather than as `/parent/rating_key` — an `ItemId` is an address, and half of one is an id whose section no longer matches its key.
 - Emitting both `gen_ai.system` and `gen_ai.provider.name` — the OTel GenAI conventions are mid-rename and unstable.
 
 ---

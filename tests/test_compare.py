@@ -28,13 +28,17 @@ from shelfwarden.compare import (
     compare_text_block,
     compare_title,
     compare_year,
+    find_in_path,
     fold_text,
     has_resolvable_id,
     id_overlap,
+    is_structural_segment,
     ladder_rule,
     name_tokens,
     normalize_position,
     parse_release_name,
+    parse_release_path,
+    path_segments,
     ratio,
     strip_articles,
     strip_diacritics,
@@ -364,6 +368,133 @@ class TestParseReleaseName:
         """Normalizing here would hide trap 3 rather than exercise it: paths are
         the one string the model deliberately leaves alone."""
         assert parse_release_name(nfd("Amélie (2001).mkv")).title == nfd("Amélie")
+
+
+class TestPathSegments:
+    """The directory half of a path, which `parse_release_name` cannot see.
+
+    Verified in step 0.5: `parse_release_name('.../The Way of Kings/CD1.m4b')`
+    returns title `'CD1'`. Four corruption classes take their detectability
+    witness from a directory, so the basename answering wrongly-but-plausibly is
+    the failure mode these tests exist for.
+    """
+
+    def test_segments_drop_only_the_final_extension(self):
+        assert path_segments("/media/Books/Sanderson/The Way of Kings/CD1.m4b") == (
+            "media",
+            "Books",
+            "Sanderson",
+            "The Way of Kings",
+            "CD1",
+        )
+
+    def test_a_windows_path_splits_too(self):
+        # A Plex server on Windows reports backslash paths to a client on anything
+        # else, which is why `parse_release_name` handles both separators.
+        assert path_segments(r"D:\Media\Movies\Amelie (2001)\Amelie.mkv") == (
+            "D:",
+            "Media",
+            "Movies",
+            "Amelie (2001)",
+            "Amelie",
+        )
+
+    def test_an_empty_path_has_no_segments(self):
+        assert path_segments("") == ()
+        assert path_segments("///") == ()
+
+
+class TestParseReleasePath:
+    def test_the_basename_wins_where_it_answers(self):
+        parsed = parse_release_path("/media/Movies/Whatever/The Dark Knight (2008).mkv")
+        assert (parsed.title, parsed.year, parsed.source) == (
+            "The Dark Knight",
+            2008,
+            "The Dark Knight (2008).mkv",
+        )
+
+    def test_a_scene_basename_keeps_its_tags(self):
+        # `path_segments` strips the extension and `parse_release_name` strips one
+        # too, so composing them naively turns `br.1080p.mkv` into `br`. The
+        # basename is parsed from the raw segment for exactly this reason.
+        parsed = parse_release_path("/m/The.Dark.Knight.2008.1080p.BluRay.x265-GRP.mkv")
+        assert parsed.title == "The Dark Knight"
+        assert set(parsed.tags) >= {"1080p", "bluray", "x265"}
+
+    def test_the_parent_supplies_a_title_the_basename_lacks(self):
+        parsed = parse_release_path("/media/Books/Sanderson/The Way of Kings/CD1.m4b")
+        assert parsed.title == "The Way of Kings"
+        assert parsed.source == "The Way of Kings"
+
+    def test_the_parent_supplies_a_year_the_basename_lacks(self):
+        parsed = parse_release_path("/media/Movies/Amelie (2001)/movie.mkv")
+        assert (parsed.title, parsed.year) == ("Amelie", 2001)
+
+    def test_a_structural_segment_supplies_nothing(self):
+        # "Season 1" parses to a title of its own and is the nearest parent. Taking
+        # it would be a wrong answer rather than a missing one, so the walk skips it.
+        parsed = parse_release_path("/media/TV/Cowboy Bebop/Season 1/S01E02.mkv")
+        assert (parsed.season, parsed.episode) == (1, 2)
+        assert (parsed.title, parsed.source) == ("Cowboy Bebop", "Cowboy Bebop")
+
+    @pytest.mark.parametrize(
+        "segment", ["Season 1", "season 01", "CD1", "Disc 2", "Part 3", "Specials", "Extras"]
+    )
+    def test_structural_segments_are_recognised(self, segment):
+        assert is_structural_segment(segment)
+
+    @pytest.mark.parametrize("segment", ["Cowboy Bebop", "The Way of Kings", "Part of Me"])
+    def test_a_real_title_is_not_structural(self, segment):
+        assert not is_structural_segment(segment)
+
+    def test_tags_are_the_union_across_segments(self):
+        parsed = parse_release_path("/media/Movies/Blade Runner (1982) [Remastered]/br.1080p.mkv")
+        assert {"remastered", "1080p"} <= set(parsed.tags)
+        # Title and year come together, from the segment that carries the year.
+        assert (parsed.title, parsed.year) == ("Blade Runner", 1982)
+
+    def test_it_does_not_change_parse_release_name(self):
+        # 0.45's tests pin `parse_release_name` and the screen's byte output
+        # depends on it. The new function is additive or it is a regression.
+        assert parse_release_name("/media/Books/X/The Way of Kings/CD1.m4b").title == "CD1"
+
+
+class TestFindInPath:
+    def test_it_finds_a_series_name_in_a_directory(self):
+        support = find_in_path(
+            "/media/Books/Sanderson/The Stormlight Archive/The Way of Kings/CD1.m4b",
+            "The Stormlight Archive",
+        )
+        assert support.strength is SupportStrength.EXACT
+        assert support.matched == "The Stormlight Archive"
+
+    def test_it_folds_rather_than_matching_substrings(self):
+        # `strip_punctuation` is a rung of the shared ladder, so a hit arrives
+        # with the rule that produced it rather than as a bare boolean.
+        support = find_in_path("/media/Movies/Spider-Man (2002)/film.mkv", "Spider Man (2002)")
+        assert support.strength is SupportStrength.NORMALIZED
+        assert support.rule == "strip_punctuation"
+
+    def test_an_nfd_directory_matches_an_nfc_authority(self):
+        # Trap 3's door: `FilePart.path` is deliberately un-normalized.
+        nfd = unicodedata.normalize("NFD", "Amélie")
+        support = find_in_path(f"/media/Movies/{nfd} (2001)/movie.mkv", "Amélie (2001)")
+        assert support.strength is SupportStrength.NORMALIZED
+
+    def test_it_applies_no_threshold_of_its_own(self):
+        # A path always offers some fuzzy noise; deciding whether that counts is
+        # a Policy's job. The comparator reports what it found and nothing more.
+        noise = find_in_path("/media/Movies/Other/x.mkv", "Amélie")
+        assert noise.strength is SupportStrength.FUZZY
+        assert not SCREEN_POLICY.satisfied_by(noise)
+
+    def test_no_authority_is_none(self):
+        assert find_in_path("/a/b/c.mkv", None).strength is SupportStrength.NONE
+
+    def test_the_strongest_segment_wins(self):
+        support = find_in_path("/Amelie/Amélie (2001)/Amélie.mkv", "Amélie")
+        assert support.strength is SupportStrength.EXACT
+        assert support.matched == "Amélie"
 
 
 # -- the leaf property ----------------------------------------------------

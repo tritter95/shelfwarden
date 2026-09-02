@@ -51,7 +51,7 @@ Keep `trace` optional so the agent runs without a tracing stack installed.
 
 Module ownership is single-purpose and stated in `implementation-plan.md` §1. Two rules that matter more than the rest:
 
-- **`agent/loop.py` is the only module LangGraph would replace in Phase 4.** Anything that would have to be rewritten alongside it belongs somewhere else.
+- **`agent/loop.py` is the only module LangGraph would replace in Phase 4.** Anything that would have to be rewritten alongside it belongs somewhere else. That has been an untested assertion since 0.1; Phase 4 is where it gets tested, and a module the port has to change is a finding about the seam rather than an edit (`plans/phase-4-langgraph.md`, Decision 3).
 - **`library/` and `sources/` are the Phase 5 MCP extraction boundary.** They must not import from `agent/`.
 
 ### 1.3 Import contracts
@@ -482,6 +482,17 @@ subprocess.run([sys.executable, "-c", program, out], env={"PYTHONHASHSEED": "1",
 
 The exposure is narrower than it looks and wider than it feels. `canonical_json` sorts mapping keys, so a serialized *object* is safe. **Lists are not**, and neither is anything built from `set` iteration or `Counter.most_common()`, whose tie order is insertion order. Sort every aggregation by an explicit total order — count descending, then key ascending — and cap example lists only *after* sorting, so which examples survive is a function of the data rather than of iteration order.
 
+**`random.sample` is not a prefix-stable function of `k`.** It holds two algorithms and picks between them on a size heuristic that itself depends on `k`. Verified in step 0.5:
+
+```
+Random(1518).sample(range(24), 5) -> [6, 15, 23, 8, 7]
+Random(1518).sample(range(24), 6) -> [6, 15, 8, 7, 3, 1]      # 23 is gone
+```
+
+Three such divergences appear in `n = 22..89` alone. `Random.shuffle` has the same shape for a different reason — it is Fisher–Yates over `_randbelow`, so its draws depend on the list length, and a candidate list that grows by one permutes everything.
+
+The consequence lands on `case_id`. If a class's share in `composition.toml` moves from five cases to six, seeded sampling re-picks *different subjects*, every `case_id` in that cell changes, and the CI baseline resets on a one-case edit — the exact failure semantic ids exist to prevent. **Select by hash rank instead**: sort candidates by `sha256(seed | subject_key)` and take the first *N*, which is additive by construction. Reserve the RNG for choices *within* a case, seeded per case from the same tuple `case_id` hashes. `tests/evals/corrupt/` parses the package and fails on any `sample`/`choices` call, rather than trusting review to catch one.
+
 The mirror-image trap is worth stating too, because it bit step 0.4 and the first trap hides it: since `canonical_json` sorts keys, a count-ordered *mapping* does not survive the round trip either — it comes back alphabetical. Ordering a human is meant to read has to be re-derived at render time, not inherited from the dict it was stored in.
 
 ### 8.3 Async
@@ -560,3 +571,6 @@ The rules most easily violated by well-intentioned code, collected in one place:
 10. **Evidence freshness is checked before execution** — re-fetch by `query_id` and demote any auto-band repair whose backing evidence changed since approval.
 11. **An absence claim states the population it was made over.** "No other item shares this title and year" is a claim about the library, so it reads `roots.jsonl`, never the exported slice — a duplicate that was simply not sampled would mark an item guarded and score the agent's correct finding as a false positive. Where no population index exists, the predicate reports `unavailable`; it never quietly falls back to a smaller scope.
 12. **`not_applicable` and `unavailable` are different facts, and neither is a pass.** "A movie has no season" and "nobody has asked TMDB yet" cannot share a status, or coverage stops being measurable.
+13. **A corruption declares its blast radius, and a population index is derived from the world it describes.** Two of the screen's predicates are population-scoped, so corrupting one family changes the screen verdict of items in *other* families — verified: corrupting one film strips an untouched film's `duplicate_quality` guard. Every corruption records `collateral` (ids outside its family whose population key it moved) and `induced` (problems it knowingly creates inside it). And `roots.jsonl` for a corrupted world is rebuilt **from the corrupted items**, never carried over: with a stale index the twin relation goes *asymmetric* — A finds B, B does not find A — and the screen reports a guard that is false, with nothing raising.
+14. **A witness resolves against the corrupted world, never against the ground truth.** A witness citing the pre-corruption record proves only that we knew the answer, which was never in question. Enforce it structurally — the witness builder is constructed over the mutated items and cannot see the clean ones — rather than by remembering.
+15. **A change records what was *stored*, not what was asked.** Validation is not the identity function: an NFD title is stored as NFC, guids are re-sorted, `locked_fields` is deduplicated. Read `before` and `after` back from the dumped item, or the reverse writes bytes the ground truth never had. And decide a no-op on **canonical bytes**, not Python equality: `True == 1` and `b'true' != b'1'`.

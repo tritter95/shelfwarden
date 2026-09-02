@@ -100,34 +100,55 @@ Legend — `[ ]` not started · `[~]` in progress · `[x]` done
 - [x] **Done when:** the screen classifies the full export and its output feeds both the should-not-touch slice and real-slice labeling
 
 ### 0.5 Corruption functions
+
+> Design detail, the seven verified findings behind it, and the eight decisions taken: [`plans/step-0.5-corruption-functions.md`](./plans/step-0.5-corruption-functions.md).
+
+**Eleven of fifteen classes ship.** Three need an external record as an ingredient or as a witness and land with `sources/` in step 1.1; one is not synthesizable by design. The split is `registry.CORRUPTION_TABLE` and `registry.UNSYNTHESIZABLE_REASON` — a table, so the counts are computed and a test asserts every class appears in exactly one of them.
+
 Movies / TV
-- [ ] `wrong_match`
-- [ ] `year_collision_remake`
-- [ ] `foreign_title_variant`
-- [ ] `alternate_cut`
-- [ ] `missing_metadata`
-- [ ] `duplicate_quality`
-- [ ] `episode_wrong_season`
-- [ ] `absolute_vs_seasonal`
-- [ ] `filename_unmatchable`
+- [x] `wrong_match` — donor from the same section; witness is the filename the corruption does not touch
+- [x] `year_collision_remake` — donor is a genuine remake partner (same title, **different** year)
+- [ ] `foreign_title_variant` — **deferred to 1.1**: the corruption substitutes a real TMDB `alternative_titles` entry, and inventing one produces a case about a film that does not exist
+- [x] `alternate_cut` — one variant (`strip_edition`); `collide` needs a library with two *marked* cuts, which the census has not yet shown to exist
+- [ ] `missing_metadata` — **deferred to 1.1**: detecting the empty summary is local, resolving its true value is not, and weakening the postcondition to "non-empty and cited" would make the metric meaningless
+- [x] `duplicate_quality` — adds a root with a minted key; twin test is `(title, year)`, so a remake pair is not mistaken for a duplicate
+- [x] `episode_wrong_season` — `reparent` only; `index_only` is unrepresentable in Plex and is excluded with the reason recorded
+- [x] `absolute_vs_seasonal` — renumbers the whole show and **removes** the seasons it empties
+- [x] `filename_unmatchable` — the scene name written is deliberately parseable; `opaque_hash` would be unsolvable rather than hard
 
 Audiobooks
-- [ ] `series_order_broken`
-- [ ] `author_name_variant`
-- [ ] `narrator_as_author`
-- [ ] `multi_file_split`
-- [ ] `missing_series`
-- [ ] `anthology_omnibus`
+- [x] `series_order_broken` — needs three positioned books and a position named in a path segment, matched as a token (`"1" in "CD1"` is not a position)
+- [x] `author_name_variant` — witness is `compare_person_name` at ALIAS, so the guard is not threshold-dependent
+- [ ] `narrator_as_author` — **deferred to 1.1**: needs a real narrator name; another author's name from the export is `author_name_variant` wearing a different label
+- [x] `multi_file_split` — relation witness over stripped disc markers **and** the shared parent directory
+- [x] `missing_series` — witness is the series folder; the candidate test applies the *policy*, not a bare non-`NONE` support
+- [ ] `anthology_omnibus` — **not synthesizable by design**: the expectation is `escalate`, so it needs an ambiguity witness and constituent titles from an authority. Curated in 0.9
+
+Structure (three corrections to `implementation-plan.md` §3, each forced by a class it could not express)
+- [x] **The unit is a family, and the record is an item-set delta** — `ADD` / `REMOVE` / `MODIFY`. Five classes add or remove items, and "a new item appeared" is not a field change on an old one
+- [x] **One pointer grammar** — `pointer.py`, RFC 6901, with `*` as a whole segment permitted in a *selector* and forbidden in a change path. `/parts/*/path`, not `parts[*].file`: the model has no `file` field. New import contract, `the pointer language is a leaf`
+- [x] **Three witness kinds** — `VALUE` (a field's true value is recoverable), `RELATION` (two or more ids are provably one thing), `AMBIGUITY` (defined, unused until `anthology_omnibus` is curated). The specified witness describes only the first
 
 Detectability (no case ships unproven)
-- [ ] `DetectabilityWitness` on every `CorruptionResult`
-- [ ] Generator runs the **scorer's own comparator**: witness ≠ corrupted, witness == ground truth
-- [ ] No-op `FieldChange` (`before == after`) raises rather than warns
-- [ ] Property test: `apply_reverse(changes)` == `ground_truth_item` byte-for-byte
-- [ ] Rejected cases → `datasets/<id>/rejected.jsonl`, rolled into the per-class deficit report
-- [ ] Witnesses content-addressed into the shared evidence store and committed with the dataset
+- [x] `DetectabilityWitness` on every `CorruptionResult`, with the tier that decides whether a class can ship before 1.1
+- [x] Generator runs the **scorer's own comparators**: witness ≠ corrupted, witness == ground truth, both judged by a `Policy` rather than a threshold in the corruption
+- [x] **Anti-circularity is structural**: `LocalWitness` is constructed over the *corrupted* items and cannot see the clean family, and every pointer is verified to resolve against the corrupted world
+- [x] No-op `FieldChange` (`before == after`) raises rather than warns — decided on **canonical bytes**, since `True == 1` in Python and `b'true' != b'1'` in JSON
+- [x] `before`/`after` **read back from the dumped item**, never from the caller's intent: validation rewrites NFD titles to NFC, re-sorts guids, and deduplicates `locked_fields`
+- [x] Property test: `apply_reverse(changes)` == `ground_truth_item` byte-for-byte, over every class
+- [x] Rejected cases → `rejected.jsonl`, rolled into the per-class deficit report, with **not-applicable and rejected counted apart** — "no remake pairs in this library" and "the harness refused what it built" are different facts and only one is actionable
+- [ ] Witnesses content-addressed into a committed evidence store — **deferred to 1.1** with the authority tier. No corruption emits an authority witness yet, and a stub store would be a shape chosen with no evidence. `WitnessTier.AUTHORITY` exists so 1.1 adds an implementation rather than a concept
 
-- [ ] **Done when:** each function has a unit test asserting the mutation applied, the truth record round-trips, and the case is provably detectable
+Corroboration (found by building it)
+- [x] Every emitted case is **re-screened**, and a corruption the screen still guards afterwards is rejected (`screen_intact`). Five verdicts: `broken` / `intact` / `already_failing` / `unavailable` / `unguarded`, comparing **before against after** — with a `NullAuthority` most guards are unavailable anyway, so "not guarded afterwards" alone would report every case as a success
+- [x] **Two `GUARD_TABLE` rows corrected**, both claiming guards they did not have. `episode_wrong_season` was guarded by `season_membership_coherent`, which stays *passing* on a re-parented episode because re-parenting is internally consistent; `absolute_vs_seasonal` was guarded by `episode_numbering_contiguous`, which passes on exactly the numbering it was meant to detect (S01E01..S01E52 is contiguous). Both now key on `filename_matches_metadata`
+- [x] Corruptions declare `induced` (problems created inside the family) and `collateral` (ids **outside** it whose population-scoped guard moved) — verified: corrupting one film strips an untouched film's `duplicate_quality` guard, and with a stale `roots.jsonl` the twin relation goes *asymmetric* and the screen reports a guard that is false
+- [x] Selection is by **hash rank**, never `random.sample` — verified non-prefix-stable in `k`: `Random(1518).sample(range(24), 5)` selects element 23 and `sample(range(24), 6)` does not. A drawn subject would reset every `case_id` in a cell on a one-case composition edit. A test parses the package and fails on any `sample`/`choices` call
+- [x] Per-case RNG seeded from `(seed, subject_key, class, variant)` — the same tuple `case_id` will hash — so a case is independent of the run it was generated in
+- [x] `subject_key` ladder built here rather than in 0.6, because the RNG needs it: external id → title/year hash → path hash, **never** a rating key
+
+- [x] `shelfwarden corrupt <export>` → `datasets/corruptions/<export_id>/`: `corruptions.json`, `rejected.jsonl`, `corruptions.md`. No timestamp, byte-identical across two `PYTHONHASHSEED` values. The table you read *before* writing `composition.toml`, the way `--census-only` is the one you run before choosing `--count`
+- [x] **Done when:** each function has a unit test asserting the mutation applied, the truth record round-trips, and the case is provably detectable
 
 ### 0.6 Truth schema + generator
 - [ ] `TruthFile` schema with `expectation.kind` ∈ `repair | no_action | escalate`
@@ -302,12 +323,38 @@ Guard rules
 
 ---
 
-## Phase 4 — Framework migration (optional, deliberate)
+## Phase 4 — LangGraph (deliberate, measured)
 
-- [ ] Port the loop to LangGraph for checkpointing/interrupt semantics
-- [ ] Keep guard layer, tools, and eval harness framework-independent
-- [ ] Run the same eval suite against both implementations and diff results
-- [ ] Document what the framework actually bought
+> **Gate:** the same eval suite runs against both loop implementations and the per-case diff is empty or explained; an approval gate round-trips through `interrupt()` / `Command(resume=...)` across a killed process; and the writeup records what the framework bought, what it cost, and which of the modules it was not supposed to touch it had to.
+
+> Decision record, the seven verified findings and the six decisions taken: [`plans/phase-4-langgraph.md`](./plans/phase-4-langgraph.md). Verified 2026-09-01 against `langgraph` 1.2.11 and `langchain` 1.3.18; no dependency is installed yet, so Findings 3 and 4 are documented behavior awaiting a test in this checkout.
+
+**LangGraph is adopted; LangChain is not.** `langchain` 1.3.18 depends on `langgraph` — it is now the agent layer *above* the runtime, and every abstraction it sells has a counterpart here that exists for a recorded reason: `LLMProvider` (1.2), the `RunPhase`-keyed tool registry (1.3), the groundedness validator (1.4). Its message normalization would sit between the model and the verbatim bytes that make Phase 2 replay a config change rather than a rewrite. `langchain-core` arrives anyway as a hard dependency of `langgraph`, so it is confined by contract rather than avoided — the same treatment `plexapi`, `openai` and `anthropic` already get.
+
+### 4.1 Spike — non-gating, may run as soon as 1.7 exists
+- [ ] Port `agent/loop.py` to a `StateGraph` under `agent/graph/`: `InMemorySaver`, no interrupts, no import contract, no promises
+- [ ] Run `shelfwarden eval` against both implementations and diff per case
+- [ ] **The one exception to the build order in this project.** It is licensed by being non-gating — nothing depends on it, and Phases 2 and 3 proceed unchanged whether it succeeds or fails — and by 1.7 being the earliest point at which a port can be *measured* instead of merely written
+- [ ] **Done when:** the diff exists and the findings are written down. The code itself is disposable
+
+### 4.2 The port proper
+- [ ] `langgraph` + `langgraph-checkpoint-sqlite` added — **introduces persistent state, so it needs an explicit go-ahead first** per the working rules
+- [ ] Eighth import contract: `langgraph` and `langchain_core` confined to `agent/graph/`
+- [ ] `SqliteSaver`, with `durability` (`"exit"` / `"async"` / `"sync"`) chosen deliberately and the other two costed rather than defaulted
+- [ ] The checkpointer is a **resumption mechanism, never the audit log** — scoring, metrics and `revert` keep reading `runs` / `steps` / `blobs`, and the graph writes the same step rows the hand-rolled loop does
+- [ ] `--engine loop|graph` on the eval runner; both run in CI
+- [ ] `agent/tools/`, `agent/validate.py`, `agent/provider/`, `agent/guard/`, `agent/state.py`, `compare.py` and `evals/` all untouched. `development-practices.md` §1.2 has claimed since 0.1 that `agent/loop.py` is the only module LangGraph would replace; this is the test of it, and a module the port has to change is a **finding about the seam**, recorded, not a quiet edit
+- [ ] **Done when:** the same suite passes on both engines and the per-case diff is empty or explained
+
+### 4.3 Interrupts — the approval gate
+- [ ] Phase 3's `awaiting_approval` moves onto `interrupt()` / `Command(resume=...)`
+- [ ] **No snapshot write and no mutating tool call above an `interrupt()`.** The node re-executes from the top on resume, so everything above the call runs twice — here that is Plex edits and snapshot writes, on the one transition where mutations live. Phase 3's `(plan_id, item_id, operation)` idempotency keys were designed for retries, not for a framework that replays the node body by design. Enforced by a test, not by review
+- [ ] **Done when:** an approval round-trips across a killed process and applies exactly once
+
+### 4.4 The writeup
+- [ ] What the framework bought, what it cost, and what it forced
+- [ ] Whether LangGraph durability makes Phase 5's Temporal step unnecessary — "we no longer need it" is a legitimate outcome
+- [ ] **Done when:** §6 of the decision record is no longer empty
 
 ---
 
@@ -315,6 +362,7 @@ Guard rules
 
 - [ ] Extract Plex + metadata tools into a standalone, separately published **MCP server**
 - [ ] Move orchestration to **Temporal** once full-library scans make crash recovery genuinely necessary
+- [ ] Take that decision *after* 4.2 has a measured answer — Findings 4 and 5 of the Phase 4 record cover exactly the crash-recovery and suspension cases Temporal is being justified by
 - [ ] Document what changed and why the pain justified it
 
 ---

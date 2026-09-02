@@ -150,6 +150,23 @@ forbidden_modules = [
 # Finding 5 and Decision 1.
 
 [[tool.importlinter.contracts]]
+name = "the pointer language is a leaf"
+type = "forbidden"
+source_modules = ["shelfwarden.pointer"]
+forbidden_modules = [
+    "shelfwarden.agent",
+    "shelfwarden.evals",
+    "shelfwarden.library",
+    "shelfwarden.sources",
+]
+# Added in step 0.5, for the reason recorded on the `compare` contract above and
+# for one more: the truth file carries a path into an item and a pointer into an
+# evidence body in the same document, so they share a grammar. `agent/validate.py`
+# resolves citation pointers in step 1.4, which is what puts this module on the
+# agent's side of the Phase 5 seam alongside `compare`. See
+# docs/plans/step-0.5-corruption-functions.md, Decision 2.
+
+[[tool.importlinter.contracts]]
 name = "library and sources do not import the agent"
 type = "forbidden"
 source_modules = ["shelfwarden.library", "shelfwarden.sources"]

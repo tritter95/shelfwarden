@@ -366,6 +366,25 @@ def compare_person_name(observed: str | None, authority: str | None) -> Support:
     return Support(SupportStrength.FUZZY, "ratio", score=score)
 
 
+def compare_episode_number(
+    observed: tuple[int | None, int | None], authority: tuple[int | None, int | None]
+) -> Support:
+    """Compare `(season, episode)` pairs.
+
+    No fuzzy rung, for the reason `compare_series_position` has none: an episode
+    number is an identifier, and the similarity of `S01E02` and `S01E12` is not
+    evidence of anything. Either side missing a component is `NONE`, never a
+    partial match -- "the file says episode 2 and the metadata says nothing" is an
+    absence, and treating it as agreement is how a guard comes to cover a case it
+    cannot see.
+    """
+    if None in observed or None in authority:
+        return Support(SupportStrength.NONE, "missing")
+    if observed == authority:
+        return Support(SupportStrength.EXACT, "identity")
+    return Support(SupportStrength.NONE, "numbering_mismatch")
+
+
 def normalize_position(value: str) -> str:
     """Strip leading zeros and a trailing `.0`. Never coerces to a number.
 
@@ -606,6 +625,176 @@ def parse_release_name(filename: str) -> ParsedRelease:
     )
 
 
+# A path segment that is structure rather than a name: `Season 1`, `CD2`,
+# `Disc 03`, `Specials`. Such a segment supplies no title and no year, which is
+# what lets `parse_release_path` walk past `.../Cowboy Bebop/Season 1/S01E02.mkv`
+# and reach the show. Anglocentric and deliberately narrow: a film genuinely
+# titled `Vol` would be skipped, and the cost of that is falling through to a
+# farther parent -- a missed answer rather than a wrong one.
+_STRUCTURAL_SEGMENT = re.compile(
+    r"^(?:s(?:eason)?|d(?:isc|isk)|cd|part|pt|vol(?:ume)?|track|specials?|extras?)"
+    r"[\s._-]*\d*$",
+    re.IGNORECASE,
+)
+
+
+def is_structural_segment(name: str) -> bool:
+    """Is this path segment a disc/season marker rather than a name?"""
+    return bool(_STRUCTURAL_SEGMENT.match(name.strip()))
+
+
+def _raw_segments(path: str) -> list[str]:
+    return [segment for segment in re.split(r"[\\/]", path) if segment]
+
+
+def path_segments(path: str) -> tuple[str, ...]:
+    """A path split into comparable name segments, nearest-last.
+
+    `parse_release_name` reads the **basename** and nothing else, which is right
+    for what step 0.45 asked of it and blind to what step 0.5 needs: four
+    corruption classes take their detectability witness from a *directory*. The
+    shared parent that proves two albums are one book, the series folder that
+    proves a stripped series membership, the `[Final Cut]` folder that proves
+    which cut a file holds -- on `.../The Way of Kings/CD1.m4b` the basename
+    parses to `CD1` and tells you nothing while the parent tells you everything.
+
+    The final segment is returned **without its extension**, because every
+    consumer of this function is comparing names rather than opening files.
+    (`parse_release_path` deliberately does not use it for the basename: strip
+    the extension here and `parse_release_name` strips a second one, turning
+    `br.1080p.mkv` into `br` and losing the tag.)
+
+    Deliberately not NFC-normalized, for the reason `ParsedRelease` records:
+    `FilePart.path` is the one string this project does not normalize, and
+    folding happens at comparison time so trap 3 is exercised rather than hidden.
+    """
+    segments = _raw_segments(path)
+    if not segments:
+        return ()
+    segments[-1] = _EXTENSION.sub("", segments[-1])
+    return tuple(segments)
+
+
+def parse_release_path(path: str) -> ParsedRelease:
+    """`parse_release_name`, falling back to the parent directories.
+
+    The basename is authoritative where it answers. Where it does not -- because
+    it is a bare stem, or a structural segment like `CD1` -- the parents are
+    tried from nearest to farthest. Three rules, each earning its place:
+
+    * **A structural segment supplies nothing.** `Season 1` is not a show title
+      and `CD1` is not a book title, and taking either would be a wrong answer
+      rather than a missing one.
+    * **Title and year are taken together**, from whichever segment supplies the
+      year. `Title (Year)` is one claim, not two, so `Amelie (2001)/movie.mkv`
+      resolves to `Amelie` rather than to `movie` with a year bolted on.
+    * **`source` names the segment that supplied the title**, so a reader can see
+      where the answer came from instead of assuming it was the filename.
+
+    `tags` is the union across every segment, sorted: an edition marker lives in
+    the folder at least as often as in the file, and `alternate_cut` reads it.
+
+    `parse_release_name` is deliberately left untouched -- 0.45's tests pin its
+    behavior and the screen's byte output depends on it.
+    """
+    segments = _raw_segments(path)
+    if not segments:
+        return ParsedRelease(source="", title="")
+
+    parsed = parse_release_name(segments[-1])
+    structural = is_structural_segment(parsed.title)
+    title = "" if structural else parsed.title
+    year = parsed.year
+    season, episode = parsed.season, parsed.episode
+    source = parsed.source if title else ""
+    tags = set(parsed.tags)
+
+    for segment in reversed(segments[:-1]):
+        if title and year is not None:
+            break
+        candidate = parse_release_name(segment)
+        tags |= set(candidate.tags)
+        if is_structural_segment(candidate.title):
+            continue
+        if season is None and candidate.season is not None:
+            season, episode = candidate.season, candidate.episode
+        if year is None and candidate.year is not None:
+            year = candidate.year
+            if candidate.title:
+                title, source = candidate.title, segment
+            continue
+        if not title and candidate.title:
+            title, source = candidate.title, segment
+
+    return ParsedRelease(
+        source=source,
+        title=title,
+        year=year,
+        season=season,
+        episode=episode,
+        tags=tuple(sorted(tags)),
+    )
+
+
+# Where a library hides a qualifier inside a segment: `Blade Runner (1982)
+# [Final Cut]`, `The Way of Kings - Part 2`. Splitting on these lets an edition
+# or a series name be found without a substring match, which would report a hit
+# with no fold rung behind it.
+# The en dash is spelled by codepoint: a literal one is indistinguishable
+# from a hyphen in most editors, and RUF001 flags it for exactly that reason.
+_CHUNK = re.compile("[\\[\\]()]|\\s[-\u2013]\\s")
+
+
+def _path_candidates(path: str) -> tuple[str, ...]:
+    """Each segment of a path, plus the bracketed chunks inside it.
+
+    Whole segments first, so a segment that matches exactly outranks a chunk of
+    one. Chunks are what let `[Final Cut]` be found inside
+    `Blade Runner (1982) [Final Cut]` -- comparing the whole segment against
+    `Final Cut` fails, and a substring test would return a hit with no fold rung
+    to justify it.
+    """
+    found: list[str] = []
+    for segment in path_segments(path):
+        found.append(segment)
+        for chunk in _CHUNK.split(segment):
+            chunk = chunk.strip()
+            if chunk and chunk != segment:
+                found.append(chunk)
+    return tuple(found)
+
+
+def find_in_path(path: str, authority: str | None) -> Support:
+    """The strongest `Support` any segment of a path offers for a string.
+
+    This is the comparator behind the directory-shaped witnesses: is the series
+    name still somewhere in the path after it was stripped from the metadata, is
+    the edition marker still in the folder after `edition_title` was cleared. It
+    reuses `compare_title` per segment rather than substring matching, so a hit
+    arrives with the fold rung that produced it and is subject to the same policy
+    as every other comparison.
+
+    It returns the best support it found and applies **no threshold** -- a path
+    almost always offers some FUZZY noise (`media` against `Amelie` scores 0.36),
+    and deciding whether that counts is a `Policy`'s job, not a comparator's. A
+    caller that treats a bare non-NONE result as a hit has skipped the policy.
+
+    `matched` names the winning segment -- the same role it plays for an alias,
+    one level out: which observed string actually did the work.
+    """
+    if not authority:
+        return Support(SupportStrength.NONE, "empty")
+    best: Support | None = None
+    for segment in _path_candidates(path):
+        support = compare_title(segment, authority)
+        if support.strength is SupportStrength.NONE:
+            continue
+        ranked = (STRENGTH_RANK[support.strength], support.score or 0.0)
+        if best is None or ranked > (STRENGTH_RANK[best.strength], best.score or 0.0):
+            best = Support(support.strength, support.rule, support.score, matched=segment)
+    return best or Support(SupportStrength.NONE, "no_match")
+
+
 __all__ = [
     "FOLD_LADDER",
     "LEADING_ARTICLES",
@@ -620,19 +809,24 @@ __all__ = [
     "Support",
     "SupportStrength",
     "at_least",
+    "compare_episode_number",
     "compare_person_name",
     "compare_series_position",
     "compare_text_block",
     "compare_title",
     "compare_year",
+    "find_in_path",
     "fold_rungs",
     "fold_text",
     "has_resolvable_id",
     "id_overlap",
+    "is_structural_segment",
     "ladder_rule",
     "name_tokens",
     "normalize_position",
     "parse_release_name",
+    "parse_release_path",
+    "path_segments",
     "ratio",
     "strip_articles",
     "strip_diacritics",

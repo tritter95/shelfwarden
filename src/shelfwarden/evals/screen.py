@@ -226,8 +226,33 @@ GUARD_TABLE: dict[ProblemClass, frozenset[Predicate]] = {
     ProblemClass.ALTERNATE_CUT: frozenset(),
     ProblemClass.MISSING_METADATA: frozenset({Predicate.SUMMARY_PRESENT}),
     ProblemClass.DUPLICATE_QUALITY: frozenset({Predicate.NO_TITLE_YEAR_TWIN}),
-    ProblemClass.EPISODE_WRONG_SEASON: frozenset({Predicate.SEASON_MEMBERSHIP_COHERENT}),
-    ProblemClass.ABSOLUTE_VS_SEASONAL: frozenset({Predicate.EPISODE_NUMBERING_CONTIGUOUS}),
+    # `season_membership_coherent` alone does NOT guard this class, which step 0.5
+    # discovered by building the corruption. The realistic mutation re-parents an
+    # episode -- setting `parent`, `parent_index`, and `parent_title` together,
+    # the only form Plex can represent -- and that leaves the predicate internally
+    # consistent and *passing* on a plainly misfiled episode. The predicate guards
+    # only the incoherent form, which a real server does not produce, so the class
+    # was effectively unguarded and reported as guarded.
+    #
+    # `filename_matches_metadata` is what actually caught it. Adding it narrows
+    # the guard to episodes whose files carry an `SxxEyy` marker -- and since that
+    # predicate is not applicable to a show or a season, those items now report
+    # `blocked` rather than `guarded`, which is correct: the evidence lives in the
+    # episode's own filename. See docs/plans/step-0.5-corruption-functions.md,
+    # Finding 5.
+    ProblemClass.EPISODE_WRONG_SEASON: frozenset(
+        {Predicate.SEASON_MEMBERSHIP_COHERENT, Predicate.FILENAME_MATCHES_METADATA}
+    ),
+    # Corrected in step 0.5, and for the same reason as `episode_wrong_season`
+    # above. `episode_numbering_contiguous` does not guard this class at all:
+    # real absolute numbering is S01E01..S01E52, which is perfectly contiguous, so
+    # the predicate passes on exactly the shape the class is about. It catches
+    # gaps and duplicate indices -- both real problems, neither this one.
+    #
+    # What actually catches a renumbered show is the episode's own filename still
+    # saying S02E01 while the metadata says S01E13. The roadmap's note that this
+    # class was "guarded weakly" by contiguity was optimistic; it was not guarded.
+    ProblemClass.ABSOLUTE_VS_SEASONAL: frozenset({Predicate.FILENAME_MATCHES_METADATA}),
     ProblemClass.FILENAME_UNMATCHABLE: frozenset(
         {Predicate.RESOLVABLE_ID_PRESENT, Predicate.FILENAME_MATCHES_METADATA}
     ),

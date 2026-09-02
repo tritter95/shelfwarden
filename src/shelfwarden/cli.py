@@ -17,8 +17,10 @@ from shelfwarden import __version__
 from shelfwarden.config import ConfigError, load_settings, require_plex
 from shelfwarden.evals import export as export_module
 from shelfwarden.evals import screen as screen_module
+from shelfwarden.evals.corrupt import report as corrupt_report
 from shelfwarden.library.base import LibraryError
 from shelfwarden.library.plex import PlexLibrary, effective_request_params
+from shelfwarden.models.finding import ProblemClass
 from shelfwarden.models.item import FetchProfile
 from shelfwarden.store import db as store_db
 
@@ -271,6 +273,90 @@ def screen(
             "unavailable rather than being scoped to the slice. Re-run `shelfwarden export`."
         )
     typer.echo(f"Report: {directory / screen_module.SCREEN_MARKDOWN_FILE}")
+
+
+@app.command()
+def corrupt(
+    ctx: typer.Context,
+    export_dir: Annotated[
+        Path, typer.Argument(help="Export directory written by `shelfwarden export`.")
+    ],
+    seed: Annotated[int, typer.Option("--seed", help="Seed for subject ranking.")] = (
+        export_module.DEFAULT_SEED
+    ),
+    problem_class: Annotated[
+        list[str] | None,
+        typer.Option("--class", help="Restrict to these problem classes. Repeatable."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Families to try per class. Raising it only adds cases."),
+    ] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Where to write. Defaults to datasets/corruptions/<id>."),
+    ] = None,
+) -> None:
+    """Survey which corruptions this export can actually supply.
+
+    A **candidate survey, not a dataset**: every applicable class is attempted
+    against every applicable family. Read `corruptions.md` before writing
+    `composition.toml` -- it separates "your library has no remake pairs" from
+    "the harness rejected what it built", and only the second is a bug.
+
+    No case is emitted without a `DetectabilityWitness` the scorer's own
+    comparators accept, and every emitted case is re-screened: a corruption the
+    screen still guards afterwards is refused rather than shipped.
+    """
+    try:
+        manifest = export_module.load_manifest(export_dir)
+    except FileNotFoundError as exc:
+        typer.echo(
+            f"{export_dir} is not an export directory: no {export_module.MANIFEST_FILE}. "
+            "Point this at a directory written by `shelfwarden export`.",
+            err=True,
+        )
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    try:
+        wanted = [ProblemClass(name) for name in problem_class] if problem_class else None
+    except ValueError as exc:
+        known = ", ".join(str(value) for value in ProblemClass)
+        typer.echo(f"{exc}. Known classes: {known}", err=True)
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    directory = out or corrupt_report.default_directory(manifest.export_id)
+    try:
+        report = corrupt_report.run_corrupt(
+            export_dir, directory, seed=seed, classes=wanted, limit=limit
+        )
+    except screen_module.ScreenError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(ExitCode.ERROR) from exc
+
+    counts = report.counts
+    typer.echo(f"Wrote {directory}")
+    typer.echo(
+        f"{counts.accepted} case(s) over {counts.families} famil(y/ies): "
+        f"{counts.classes_with_cases} of {counts.classes_implemented} implemented class(es) "
+        f"produced cases, {counts.classes_deferred} class(es) wait on step 1.1."
+    )
+    typer.echo(
+        f"{counts.not_applicable} famil(y/ies) were never candidates; "
+        f"{counts.rejected} attempt(s) were rejected — see "
+        f"{directory / corrupt_report.REJECTED_FILE}."
+    )
+    empty = [
+        row.problem_class
+        for row in report.deficits
+        if row.unsynthesizable_reason is None and row.accepted == 0
+    ]
+    if empty:
+        typer.echo(
+            "  no cases for: " + ", ".join(str(name) for name in empty) + ". This is a "
+            "coverage fact about the library, not a failure — `corruptions.md` says which."
+        )
+    typer.echo(f"Report: {directory / corrupt_report.MARKDOWN_FILE}")
 
 
 @app.command()

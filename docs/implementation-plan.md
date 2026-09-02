@@ -186,6 +186,16 @@ class CorruptionResult:
     witness: DetectabilityWitness  # proof this case is solvable at all
 ```
 
+> **Correction, recorded in step 0.5.** Three changes to the block above, each forced by a problem class it could not express. See `plans/step-0.5-corruption-functions.md`.
+>
+> 1. **The unit is a family, and the record is an item-set delta.** `CorruptionResult` as written carries one `item` and a list of `FieldChange`. Five classes cannot be expressed that way: `duplicate_quality` **adds** an item, `author_name_variant` and `multi_file_split` add items *and* re-parent existing ones, `absolute_vs_seasonal` renumbers every episode and empties a season, `anthology_omnibus` splits one item into several. "A new item appeared" is not a field change on an old one. The delta is `ADD` / `REMOVE` / `MODIFY`; `apply_reverse` inverts it, and it does not record ordering because `RECORD_ORDER` is a pure function of the ids.
+> 2. **One pointer grammar, RFC 6901.** The truth file carries a path into an item (`corruption.changes[].path`) and a pointer into an evidence body (`witness.pointer`) in the same document, and two grammars there is one resolver call away from a silent wrong answer in the scorer. So `guids` is `/guids` and `parts[*].file` is `/parts/*/path` — the syntax, and the field name, because the normalized model calls it `FilePart.path` and has no `file`. `*` occupying a whole segment is a documented extension legal only in a **selector**: a change addresses one location because its reverse writes one value. `pointer.py` is top-level for the reason `compare.py` is, and carries its own import contract.
+> 3. **`DetectabilityWitness` has three kinds.** The witness above proves one shape of solvability — a pointer resolves a value that differs from the corrupted one and equals the ground truth. `duplicate_quality`, `author_name_variant`, and `multi_file_split` have a **relation** as their ground truth (*these ids are one work, and this is the keeper*), and no single resolved value is the answer. `anthology_omnibus` expects `escalate`, where a witness resolving a unique value would prove the case is *not* ambiguous. So: `VALUE`, `RELATION`, `AMBIGUITY`, each with its own acceptance rule, all judged by the shared comparators.
+>
+> One rule outranks all three and is enforced structurally rather than remembered: **a witness pointer must resolve against the corrupted world, never against the ground truth.** A witness citing the pre-corruption record proves only that we knew the answer. `LocalWitness` is constructed over the mutated items and never sees the clean ones.
+>
+> Also settled: eleven of the fifteen classes ship at 0.5. Three need an external record as an ingredient or as a witness (`foreign_title_variant`, `missing_metadata`, `narrator_as_author`) and land with `sources/` in 1.1; `anthology_omnibus` is not synthesizable by design. The split is a table in code, so the counts are computed rather than typed.
+
 **Every corruption must prove its own detectability, or the case is not emitted.** This is the fix for a whole family of silently-unpassable cases — nulling a summary that was already empty in the source export, applying `foreign_title_variant` to a film TMDB has no alternate title for, swapping a `wrong_match` into a TMDB record too ambiguous to discriminate. Left to scoring time these depress the pass rate and hide real regressions.
 
 ```python
@@ -288,6 +298,13 @@ What was verified is then recorded, and forbid-all is narrowed to it:
   "unguarded_classes": ["alternate_cut","duplicate_quality"]
 }
 ```
+
+> **Correction, recorded in step 0.5.** Two of the guard assignments were wrong, and building the corruptions is what found them — both claimed a guard against a mutation the predicate does not notice.
+>
+> * `episode_wrong_season` was guarded by *season membership coherence*. The realistic corruption re-parents an episode — setting `parent`, `parent_index`, and `parent_title` together, the only form Plex can represent — which leaves the predicate internally consistent and **passing** on a plainly misfiled episode. It guarded only the incoherent form, which a real server does not produce.
+> * `absolute_vs_seasonal` was guarded by *episode numbering contiguity*. Real absolute numbering is S01E01..S01E52, which is perfectly contiguous, so the predicate passes on exactly the shape the class is about.
+>
+> Both now key on the episode's own filename still naming its true season and episode. The consequence is honest and visible: a show or a season cannot be guarded for either class, because the evidence lives in the episode. This is the failure mode Defect 3 exists to prevent, one level down — an item labelled *verified not to have* a problem it had, whose correct detection would then have scored as a false positive.
 
 (The illustrative JSON above lists `duplicate_quality` as unguarded while the predicate list two paragraphs up includes *"no other item sharing normalized (title, year)"*, which guards that class and nothing else. The prose is normative: the class is guarded whenever that predicate runs at population scope. Noted rather than silently resolved — see step 0.45, Finding 6.)
 
@@ -549,6 +566,32 @@ Validator false-rejection rate is a headline metric alongside the spec's false-p
 | 1.6 | The loop + budget + guard stub | `agent/loop.py`, `budget.py`, `guard/base.py` | Runs to completion against `SnapshotLibrary` within step/cost caps |
 | 1.7 | Eval runner + report | `evals/` + `cli.py:eval` | `shelfwarden eval --dataset <id>` runs 20+ cases and emits the scored report — **this is the gate** |
 | 1.8 | Anthropic provider | `agent/provider/anthropic.py` | Same suite runs against both providers; results diffed per case |
+
+> **Correction, recorded 2026-09-01 (Phase 4).** Two changes to a phase this
+> document does not otherwise detail, both recorded here because they change what
+> `roadmap.md` says the spec asks for. Neither relitigates §4's choice of
+> LangGraph.
+>
+> 1. **Phase 4 now has a gate.** The spec's §5 heading reads *"Framework migration
+>    (optional, deliberate)"* and the roadmap carried four unchecked bullets with
+>    no gate text, alone among the phases. In a gated build order, an optional
+>    phase with no gate is a phase that never happens — which is the ordinary fate
+>    of the "then we'll evaluate the framework" line in any plan. The gate is the
+>    eval-suite diff the spec itself prescribes, plus an approval round-trip across
+>    a killed process, plus the writeup.
+> 2. **"The framework" was one decision and is now two.** `langchain` 1.3.18
+>    declares a dependency on `langgraph`: LangChain is the agent layer *above* the
+>    runtime, not a peer of it. **LangGraph is adopted; LangChain is not.** Every
+>    abstraction LangChain sells has a counterpart here that exists for a reason
+>    recorded in a step plan, and its message normalization would sit between the
+>    model and the verbatim bytes that make Phase 2 replay a config change rather
+>    than a rewrite. `langchain-core` still arrives as a hard dependency of
+>    `langgraph` and is confined by an eighth import contract rather than avoided.
+>
+> Seven verified findings and six decisions:
+> [`plans/phase-4-langgraph.md`](./plans/phase-4-langgraph.md). That document is a
+> decision log, not a step plan — Phases 2–5 remain out of scope for this one's
+> executable detail, for the reason stated in §Context.
 
 ### 8. Risks and open questions
 

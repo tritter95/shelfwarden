@@ -82,7 +82,7 @@ flowchart TB
         SOURCES["sources/<br/><i>planned 1.1 — TMDB · TVDB<br/>Audnexus · Open Library</i>"]
     end
 
-    subgraph agentpkg["agent — replaced wholesale by LangGraph in Phase 4"]
+    subgraph agentpkg["agent — only loop.py is replaced in Phase 4"]
         LOOP["agent/loop.py<br/><i>planned 1.6</i>"]
         TOOLS["agent/tools/<br/><i>planned 1.3</i>"]
         PROV["agent/provider/<br/><i>planned 1.2 · 1.8</i>"]
@@ -154,9 +154,9 @@ without any of them importing each other.
 
 ## 4. The enforcement seams
 
-Five import contracts run in CI on every push. They exist because each protects a
-claim the design makes, and a claim nobody checks is a claim that quietly stops
-being true.
+Seven import contracts run in CI on every push, and Phase 4 adds an eighth. They
+exist because each protects a claim the design makes, and a claim nobody checks is
+a claim that quietly stops being true.
 
 ```mermaid
 flowchart LR
@@ -180,6 +180,9 @@ flowchart LR
 | OpenAI / Anthropic SDKs confined | Provider types do not spread; swapping providers stays a config change |
 | `agent/tools/` cannot import loop, provider, or evals | The Phase 5 MCP extraction boundary — and a tool that could import `evals` could read the answer key |
 | `library/` and `sources/` cannot import `agent/` | The same MCP boundary, in the other direction |
+| `evals/export.py` cannot import `library/plex.py` | The export runs against any `LibraryProvider` — which is what lets the Phase 0 gate run offline against a fixture-backed fake |
+| `compare.py` imports no layer at all | Its consumers sit on both sides of the MCP seam; the agent must not import the package holding the answer key |
+| *(Phase 4)* `langgraph` / `langchain_core` confined to `agent/graph/` | LangGraph is adopted and LangChain is not, and `langchain-core` arrives transitively either way — see [`plans/phase-4-langgraph.md`](./plans/phase-4-langgraph.md) |
 
 Two things learned the hard way, both recorded in
 [`development-practices.md`](./development-practices.md) §1.3: an `ignore_imports`
@@ -202,8 +205,9 @@ flowchart LR
     EXPORT["export<br/><i>0.4</i>"]
     GROUND[("ground truth<br/>items.jsonl + manifest<br/>+ census")]
     SCREEN["mechanical screen<br/><i>0.45</i>"]
-    CORRUPT["corruption functions<br/><i>0.5 — 15 classes</i>"]
+    CORRUPT["corruption functions<br/><i>0.5 — 11 of 15 classes</i>"]
     WITNESS{"detectability<br/>witness"}
+    CROSS{"screen<br/>cross-check"}
     REJECT[("rejected.jsonl<br/>+ deficit report")]
     DATASET[("dataset<br/>corrupted items + truth")]
     SNAPSHOT["SnapshotLibrary<br/><i>0.7</i>"]
@@ -217,8 +221,11 @@ flowchart LR
     GROUND --> CORRUPT
     CORRUPT --> WITNESS
     WITNESS -->|"not provably<br/>detectable"| REJECT
-    WITNESS -->|"proven solvable"| DATASET
+    WITNESS -->|"proven solvable"| CROSS
+    CROSS -->|"guard still intact"| REJECT
+    CROSS -->|"guard broken"| DATASET
     SCREEN -->|"guarded classes"| DATASET
+    SCREEN -.->|"re-run on the<br/>corrupted family"| CROSS
     DATASET --> SNAPSHOT --> AGENT --> FINDINGS --> SCORER
     DATASET -->|"truth"| SCORER
     SCORER --> REPORT
@@ -242,10 +249,43 @@ comparator* over the witness and rejects cases that fail, into a per-class defic
 report — so "TMDB has no alternate title for 40% of this library" surfaces as a
 coverage gap rather than a mysteriously low score.
 
+**The screen and the generator check each other.** Every emitted case is
+re-screened, and a corruption the screen still guards afterwards does not ship:
+either the corruption did not do what it claims, or the guard does not cover it,
+and neither may reach a dataset. This is not a formality — it caught two rows of
+`GUARD_TABLE` claiming guards they did not have. `episode_wrong_season` was
+guarded by season-membership coherence, which stays *passing* on a re-parented
+episode because re-parenting is internally consistent; `absolute_vs_seasonal` was
+guarded by numbering contiguity, and S01E01..S01E52 is contiguous. Both would have
+labelled items *verified not to have* a problem they had, and a correct agent
+finding on one would then have scored as a false positive.
+
+The comparison is **before against after**, not after alone. With no authority
+tier most guards are unavailable anyway, so "not guarded afterwards" would report
+every case as a success and prove nothing.
+
+**A corruption declares its blast radius.** Two of the screen's predicates are
+population-scoped, so breaking one family changes the verdict of items in others —
+corrupting one film strips an untouched film's `duplicate_quality` guard. Each case
+records `collateral` (ids outside its family whose population key it moved) and
+`induced` (problems it knowingly creates inside it), and the population index for a
+corrupted world is *derived* from the corrupted items. Carried over stale, the twin
+relation goes asymmetric — A finds B, B does not find A — and the screen reports a
+guard that is false, with nothing raising.
+
 **Reversibility is a property test.** `apply_reverse(changes)` on a corrupted item
-must equal the ground-truth item byte-for-byte under the canonical serializer. This
-is why `NormalizedItem` is frozen and why `with_changes` is the only mutation path:
-a corruption that mutated in place could lose its own audit trail.
+must equal the ground-truth **family** byte-for-byte under the canonical
+serializer. The unit is a family rather than an item because five classes add or
+remove items, and "a new item appeared" is not a field change on an old one — the
+record is an `ADD`/`REMOVE`/`MODIFY` delta. It carries no ordering, because
+`RECORD_ORDER` is a pure function of the ids and a removed item's position is
+therefore recoverable rather than remembered.
+
+This is also why `NormalizedItem` is frozen and why `with_changes` is the only
+mutation path: a corruption that mutated in place could lose its own audit trail.
+And it is why a change records what was *stored* rather than what was asked —
+validation rewrites values (NFD titles to NFC, guids re-sorted), so a delta built
+from intent describes a mutation that did not happen.
 
 ### The export, and the two things it refuses to do
 
@@ -658,14 +698,14 @@ values, because a single-process comparison cannot see hash-order leakage at all
 | 0.3 Read-only provider | ✅ | `LibraryProvider`, `PlexLibrary`, session, audiobook detection |
 | 0.4 Export + census | ✅ | Deterministic `items.jsonl` + manifest, lock state, part ids, two-tier census incl. unknown guids, `provider_info()`, 6th import contract |
 | 0.45 Comparators + screen | ✅ | `compare.py` as a top-level leaf (7th import contract); 11 predicates, 4 statuses, 3 verdicts; population-scoped uniqueness via `roots.jsonl`; `AuthorityIndex` seam; guard coverage published per class |
-| 0.5 Corruption functions | ⬜ | 15 problem classes, each with a detectability witness |
+| 0.5 Corruption functions | ✅ | 11 of 15 classes (3 need `sources/`, 1 is unsynthesizable by design); family-scoped deltas; `pointer.py` as a top-level leaf (8th import contract); 3 witness kinds; screen cross-check, which corrected 2 `GUARD_TABLE` rows; `shelfwarden corrupt` + deficit report |
 | 0.6 Truth schema + generator | ⬜ | Semantic case ids, composition config |
 | 0.7 SnapshotLibrary | ⬜ | Same protocol, same taxonomy |
 | 0.8 Scorer | ⬜ | **Phase 0 gate** |
 | Phase 1 | ⬜ | Sources, provider interface, tools, validator, loop, eval runner |
-| Phase 2–5 | ⬜ | Guard chain, replay, repair stage, LangGraph, MCP + Temporal |
+| Phase 2–5 | ⬜ | Guard chain, replay, repair stage, LangGraph (**not** LangChain — `plans/phase-4-langgraph.md`), MCP + Temporal |
 
-3,909 lines of source, 3,398 of tests, 393 tests, all offline.
+10,435 lines of source, 6,241 of tests, 646 tests, all offline.
 
 **Phases are gated.** Do not begin one until the previous gate is met — the gate
 text is in [`roadmap.md`](./roadmap.md).
