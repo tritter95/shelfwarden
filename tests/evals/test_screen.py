@@ -15,6 +15,7 @@ still looking right. Three of them matter more than the rest:
   more exposed to hash-order leakage, not less.
 """
 
+import json
 import subprocess
 import sys
 import unicodedata
@@ -45,7 +46,7 @@ from shelfwarden.evals.screen import (
     run_screen,
 )
 from shelfwarden.models.evidence import Source
-from shelfwarden.models.finding import ProblemClass
+from shelfwarden.models.finding import ProblemClass, describes
 from shelfwarden.models.ids import IdNamespace, ItemId, parse_guids
 from shelfwarden.models.item import (
     AuthorItem,
@@ -394,6 +395,45 @@ class TestVerdicts:
         assert ProblemClass.DUPLICATE_QUALITY in item.unguarded_classes
 
 
+class TestTrivialGuarding:
+    """Step 0.6, Finding 5: a guard is only meaningful for a class that can
+    describe the item.
+
+    Before this, `absolute_vs_seasonal` was credited as guarded on every
+    well-named film, because its guard predicate `filename_matches_metadata` is
+    applicable to movies. Moving it to `unguarded` instead would score a false
+    positive as `unverified` -- the wrong direction -- so it gets a third bucket.
+    """
+
+    def test_a_class_that_cannot_apply_is_trivially_guarded(self, screened):
+        _, screen = screened
+        movie = next(row for row in screen.items if row.item_id == "fake:1:101")
+        # The guard predicate really does pass here; that is what was being credited.
+        for predicate in GUARD_TABLE[ProblemClass.ABSOLUTE_VS_SEASONAL]:
+            assert checks_of(screen, "fake:1:101")[predicate] is CheckStatus.PASS
+        assert ProblemClass.ABSOLUTE_VS_SEASONAL in movie.trivially_guarded_classes
+        assert ProblemClass.ABSOLUTE_VS_SEASONAL not in movie.guarded_classes
+        assert ProblemClass.ABSOLUTE_VS_SEASONAL not in movie.unguarded_classes
+
+    def test_the_three_buckets_partition_every_class_on_every_item(self, screened):
+        """Each class is exactly one of guarded, trivially guarded, or unguarded, and
+        the trivial bucket is exactly what `CLASS_KINDS` says cannot apply."""
+        _, screen = screened
+        for item in screen.items:
+            buckets = (
+                set(item.guarded_classes),
+                set(item.trivially_guarded_classes),
+                set(item.unguarded_classes),
+            )
+            assert sum(len(bucket) for bucket in buckets) == len(ProblemClass), item.item_id
+            assert set().union(*buckets) == set(ProblemClass), item.item_id
+            assert buckets[1] == {
+                problem_class
+                for problem_class in ProblemClass
+                if not describes(problem_class, item.media_kind)
+            }, item.item_id
+
+
 # -- candidates -----------------------------------------------------------
 
 
@@ -610,6 +650,31 @@ class TestGuardCoverage:
         for row in screen.guard_coverage:
             assert row.guarded + row.failed + row.blocked == row.in_scope
 
+    def test_in_scope_counts_only_kinds_the_class_can_describe(self, screened):
+        """`in_scope` is the denominator `fp_rate_snt` publishes. Items whose guard
+        was answered but whose kind the class cannot describe are `trivial`, and
+        before step 0.6 they inflated this number -- `absolute_vs_seasonal` counted
+        every well-named film."""
+        _, screen = screened
+        for row in screen.guard_coverage:
+            answered = [
+                item
+                for item in screen.items
+                if row.guard_predicates
+                and not all(
+                    checks_of(screen, item.item_id)[predicate] is CheckStatus.NOT_APPLICABLE
+                    for predicate in row.guard_predicates
+                )
+            ]
+            describable = [
+                item for item in answered if describes(row.problem_class, item.media_kind)
+            ]
+            assert row.in_scope == len(describable), row.problem_class
+            assert row.trivial == len(answered) - len(describable), row.problem_class
+
+        rows = {row.problem_class: row for row in screen.guard_coverage}
+        assert rows[ProblemClass.ABSOLUTE_VS_SEASONAL].trivial > 0, "the films are still answered"
+
     def test_the_screen_records_its_own_admission_standard(self, screened):
         """A stored screen states the rule it was taken under."""
         _, screen = screened
@@ -672,6 +737,17 @@ class TestBinding:
         path.write_bytes(path.read_bytes() + b'{"tampered": true}\n')
         with pytest.raises(ScreenError, match="roots_sha256"):
             read_export(export.directory)
+
+    def test_a_screen_from_an_older_schema_is_refused_with_its_fix(self, screened, tmp_path):
+        """A version-1 screen has no `trivially_guarded_classes`. Parsed anyway, it
+        would either fail with a traceback naming a field the reader never heard of
+        or -- had the field defaulted -- report every class describable everywhere."""
+        path = tmp_path / "s" / SCREEN_FILE
+        stored = json.loads(path.read_bytes())
+        stored["schema_version"] = 1
+        path.write_text(json.dumps(stored))
+        with pytest.raises(ScreenError, match="re-run `shelfwarden screen`"):
+            load_screen(tmp_path / "s")
 
     def test_the_stored_json_round_trips(self, screened, tmp_path):
         _, screen = screened

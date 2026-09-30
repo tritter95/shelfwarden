@@ -100,6 +100,37 @@ def has_wildcard(pointer: str) -> bool:
     return WILDCARD in parse(pointer)
 
 
+def matches(selector: str, pointer: str) -> bool:
+    """Does a selector address the location a pointer names? No document needed.
+
+    `select` cannot answer this: it needs a document, and the question here is
+    selector-against-pointer with nothing in hand. Step 0.6 asks it of every field
+    change, because the hard/soft postcondition tiers are written as selectors
+    (`/parts/*/path` -- a tier is a statement about a *field*, not about a slot)
+    while a `FieldChange.path` is always concrete (`/parts/0/path`, and `model.py`
+    forbids a wildcard in one outright). Dict lookup would miss every part.
+
+    Segment-wise, and length-sensitive: `/parts/*` does not match `/parts/0/path`,
+    because a selector naming an array element is not a selector naming a field of
+    that element.
+
+    The `pointer` argument may not itself hold a wildcard. Comparing two selectors
+    is a different question -- containment rather than membership -- and answering
+    it with this code would return a plausible wrong answer, which is the shape
+    this module's escaping rules exist to prevent.
+    """
+    target = parse(pointer)
+    if WILDCARD in target:
+        raise PointerError(
+            f"{pointer!r} contains a wildcard. `matches` asks whether a selector "
+            "addresses one location; a wildcard on the right names many."
+        )
+    tokens = parse(selector)
+    if len(tokens) != len(target):
+        return False
+    return all(token in (WILDCARD, other) for token, other in zip(tokens, target, strict=True))
+
+
 def _index(token: str, length: int, pointer: str) -> int:
     """Decode an array index token, strictly.
 
@@ -244,6 +275,7 @@ __all__ = [
     "build",
     "escape",
     "has_wildcard",
+    "matches",
     "parse",
     "resolve",
     "select",

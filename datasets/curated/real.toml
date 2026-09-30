@@ -1,0 +1,43 @@
+# The real slice: genuine library problems, adjudicated by a human.
+#
+# Empty until step 0.9, which builds the labelling workflow. Its candidates are
+# already computed: `screen.json`'s `candidates` array holds every item that *fails*
+# a mechanical predicate, carrying the failing predicate, its evidence, and the
+# classes that predicate guards -- which is the ~60s-per-case adjudication form,
+# pre-filled.
+#
+# An empty file is not an error. It yields an empty slice and a `not_curated`
+# deficit row in `dataset.json`, which is the honest report: the library is not
+# short of real problems, nobody has labelled any yet.
+#
+# A case is written as:
+#
+#   [[case]]
+#   item_ids = ["plex:1:41823"]
+#   problem_class = "wrong_match"
+#   notes = """Matched to the 1998 remake. IMDb id on the file's folder says 1972."""
+#
+#   [case.expectation]
+#   kind = "repair"
+#   # `unexpected` defaults to "fail". It can be set per case (fail | warn |
+#   # ignore, implementation-plan.md §3), but leave it out unless the notes say
+#   # why: a case that ignores unexpected findings is blind to fabricated ones.
+#
+#   [[case.expectation.required_findings]]
+#   problem_class = "wrong_match"
+#   item_ids = ["plex:1:41823"]
+#   must_not_change = ["/parts/*/path"]
+#
+#   [case.expectation.required_findings.postcondition."plex:1:41823"."/year"]
+#   op = "equals"
+#   value = 1972
+#
+#   [case.provenance]
+#   method = "single_label"
+#   screen_predicate = "filename_matches_metadata"
+#
+# Everything mechanical -- the ground truth family, the media kind, the subject key,
+# `case_id`, `run_group` -- is bound to the export by the generator, so a curated
+# case cannot carry an identity that disagrees with the library it describes.
+
+schema_version = 1

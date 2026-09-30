@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict
 from shelfwarden.evals import export as export_module
 from shelfwarden.evals.corrupt.context import (
     CorruptionContext,
+    SubjectKey,
     group_families,
     rank_key,
     subject_key,
@@ -83,14 +84,14 @@ def _counted(reasons: Sequence[str]) -> tuple[tuple[str, int], ...]:
     return tuple(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))
 
 
-def variant_for(spec: CorruptionSpec, seed: int, subject: object) -> str:
+def variant_for(spec: CorruptionSpec, seed: int, subject: SubjectKey | str) -> str:
     """Which variant this subject gets. Stable, and not drawn from the RNG.
 
     A drawn variant would move when an unrelated case was added, and the variant
     is part of `case_id` -- so the baseline would reset for cases that did not
     change.
     """
-    digest = rank_key(seed, subject)  # type: ignore[arg-type]
+    digest = rank_key(seed, subject)
     return spec.variants[int(digest[:8], 16) % len(spec.variants)]
 
 

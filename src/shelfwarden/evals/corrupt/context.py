@@ -100,12 +100,17 @@ def subject_key(item: NormalizedItem) -> SubjectKey:
     return SubjectKey("path", _digest([part.path for part in parts])[:16])
 
 
-def rank_key(seed: int, subject: SubjectKey) -> str:
+def rank_key(seed: int, subject: SubjectKey | str) -> str:
     """The ordering that replaces a random draw.
 
     Sorting candidates by this and taking the first *N* is prefix-stable: raising
     *N* adds subjects without moving the ones already chosen. `random.sample` is
     not, and the difference is a reset baseline on every composition edit.
+
+    Takes a `SubjectKey` or the `f"{kind}:{value}"` string it renders to, because
+    step 0.6 ranks from a `CorruptionResult.subject_key` that has already been
+    flattened to that string. Only `str(subject)` is hashed either way, so the two
+    forms are the same digest by construction rather than by agreement.
     """
     return _digest({"seed": seed, "subject": str(subject)})
 

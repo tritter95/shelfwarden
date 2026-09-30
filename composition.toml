@@ -1,0 +1,118 @@
+# What the eval dataset is meant to hold.
+#
+# Read `datasets/corruptions/<export_id>/corruptions.md` before editing this: it
+# says which classes your library can actually supply, the way `--census-only` says
+# how many roots there are before you choose `--count`. Shares here are intent;
+# the deficit table in `dataset.json` is what you got.
+#
+# Shares are **normalized at load** and need not sum to 1 -- raising one number
+# without rebalancing the others is a legitimate edit and does not silently change
+# the total. All fifteen problem classes are declared, including the four that
+# cannot yet be generated, because this file is a statement of design intent and
+# should not churn when step 1.1 lands. Those four appear in the deficit table as
+# `not_implemented`.
+#
+# Editing this file does **not** reset the eval baseline: `lineage_id` is keyed on
+# the library and the generator, and `composition_id` is recorded beside it as a
+# diagnostic. Cases the new shares dropped are simply absent, cases they added are
+# `new` and gate nothing, and everything else keeps its `case_id` and its history.
+
+[slices]
+# From spec §3. `real` and `ambiguous` are human-curated (`datasets/curated/`) and
+# ship empty until step 0.9, so a dataset generated today comes out at roughly 65%
+# of `--count` with a deficit table explaining every missing case. That is the
+# honest outcome; the temptation to backfill it by over-sampling the classes that
+# do work is exactly what the deficit report exists to resist.
+synthetic = 0.50
+real = 0.25
+should_not_touch = 0.15
+ambiguous = 0.10
+
+# The media axis is the **family root kind**, which is what `--count` counts and
+# what a case records. `author` is the audiobook root: audiobooks live in a Plex
+# `artist` section, so an audiobook corruption is handed an author family.
+#
+# A medium's per-class shares are read for the synthetic, real and ambiguous slices
+# only. `should_not_touch` resolves to media cells alone -- such a case is about an
+# item, not about a class.
+
+[media.movie]
+share = 0.40
+
+[media.movie.classes]
+wrong_match = 0.25
+year_collision_remake = 0.15
+duplicate_quality = 0.20
+alternate_cut = 0.10
+filename_unmatchable = 0.15
+# Deferred to step 1.1: the corruption substitutes a real TMDB
+# `alternative_titles` entry, and inventing one produces a case about a film that
+# does not exist.
+foreign_title_variant = 0.10
+# Deferred to step 1.1: detecting the empty summary is local, resolving its true
+# value is not, and weakening the postcondition to "non-empty and cited" would make
+# the metric meaningless.
+missing_metadata = 0.05
+# Classes that cannot describe a film. Declared at zero rather than omitted, so a
+# reader can tell "we asked for none" from "we never considered it".
+episode_wrong_season = 0.0
+absolute_vs_seasonal = 0.0
+series_order_broken = 0.0
+author_name_variant = 0.0
+narrator_as_author = 0.0
+multi_file_split = 0.0
+missing_series = 0.0
+anthology_omnibus = 0.0
+
+[media.show]
+share = 0.35
+
+[media.show.classes]
+episode_wrong_season = 0.30
+absolute_vs_seasonal = 0.25
+wrong_match = 0.15
+filename_unmatchable = 0.15
+foreign_title_variant = 0.05
+missing_metadata = 0.05
+# A show with a twin is a real duplicate, but the corruption clones films only.
+duplicate_quality = 0.05
+year_collision_remake = 0.0
+alternate_cut = 0.0
+series_order_broken = 0.0
+author_name_variant = 0.0
+narrator_as_author = 0.0
+multi_file_split = 0.0
+missing_series = 0.0
+anthology_omnibus = 0.0
+
+[media.author]
+share = 0.25
+
+[media.author.classes]
+author_name_variant = 0.25
+multi_file_split = 0.20
+series_order_broken = 0.20
+missing_series = 0.15
+# Deferred to step 1.1: needs a real narrator name as an ingredient. Taking another
+# author's name from the export produces `author_name_variant` wearing a different
+# label.
+narrator_as_author = 0.10
+# Not synthesizable by design -- the expectation is `escalate`, so it needs an
+# ambiguity witness and constituent titles from an authority, and its cases are
+# curated by hand into the ambiguous slice (step 0.9).
+#
+# This share does NOT reserve room for them there. The synthetic, real and
+# ambiguous slices all split by this one table, so the ambiguous slice gets
+# 0.10 x 0.25 x 0.05 of --count for this class: 0 cases at --count 200, 1 at 1000.
+# A labelled case beyond its cell's target is dropped as surplus. Step 0.9 decides
+# the ambiguous slice's own class mix, once there are ambiguous cases to count.
+anthology_omnibus = 0.05
+missing_metadata = 0.05
+wrong_match = 0.0
+year_collision_remake = 0.0
+foreign_title_variant = 0.0
+alternate_cut = 0.0
+duplicate_quality = 0.0
+episode_wrong_season = 0.0
+absolute_vs_seasonal = 0.0
+filename_unmatchable = 0.0

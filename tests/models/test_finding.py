@@ -10,7 +10,8 @@ class breaks the build rather than defaulting to unguarded.
 
 from shelfwarden.evals.census import READINESS_RULES
 from shelfwarden.evals.screen import GUARD_TABLE
-from shelfwarden.models.finding import ProblemClass
+from shelfwarden.models.finding import CLASS_KINDS, ProblemClass, describes
+from shelfwarden.models.item import MediaKind
 
 
 def test_there_are_fifteen_classes():
@@ -38,3 +39,17 @@ def test_it_serializes_as_its_name():
     """These strings are written into every dataset the project produces."""
     assert f"{ProblemClass.WRONG_MATCH}" == "wrong_match"
     assert ProblemClass("anthology_omnibus") is ProblemClass.ANTHOLOGY_OMNIBUS
+
+
+def test_every_problem_class_declares_a_kind_it_can_describe():
+    """A missing row would raise `KeyError` inside the screen; an empty one would
+    make the class trivially guarded on every item, so every finding of it -- right
+    or wrong -- would score as a false positive."""
+    assert set(CLASS_KINDS) == set(ProblemClass)
+    assert all(CLASS_KINDS[problem_class] for problem_class in ProblemClass)
+
+
+def test_a_tv_numbering_class_cannot_describe_a_film():
+    """Step 0.6, Finding 5, in its smallest form."""
+    assert not describes(ProblemClass.ABSOLUTE_VS_SEASONAL, MediaKind.MOVIE)
+    assert describes(ProblemClass.ABSOLUTE_VS_SEASONAL, MediaKind.EPISODE)

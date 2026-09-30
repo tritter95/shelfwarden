@@ -8,6 +8,10 @@ dist/
 # Local store, per checkout
 .shelfwarden/
 
-# Generated eval datasets; curated slices are committed
-datasets/
+# Generated eval datasets; curated slices are committed.
+# `datasets/*` rather than `datasets/`: git does not descend into an excluded
+# directory, so a negation under `datasets/` can never re-include anything --
+# verified with `git check-ignore -v`, which named the `datasets/` line for a
+# file inside `datasets/curated/`.
+datasets/*
 !datasets/curated/

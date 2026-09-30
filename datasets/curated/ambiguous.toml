@@ -1,0 +1,35 @@
+# The ambiguous slice: cases where the right answer is legitimately contested.
+#
+# Empty until step 0.9. `anthology_omnibus` is the class this slice exists for --
+# an omnibus marked as book N of a series is deliberately undecidable from the
+# library alone -- and it is the one class with no corruption function *by design*:
+# the expectation is `escalate`, so the case is solvable exactly when the ambiguity
+# is evidenced, which needs constituent titles from an authority.
+#
+# An escalate expectation is threshold-free and demands **positive** behavior.
+# Silence is not escalation: an agent that finds nothing must not score as correctly
+# escalating, which is what `require_finding` is for.
+#
+#   [[case]]
+#   item_ids = ["plex:3:9912"]
+#   problem_class = "anthology_omnibus"
+#   notes = """Three-novel omnibus shelved as Mistborn #4. Audnexus has no record."""
+#
+#   [case.expectation]
+#   kind = "escalate"
+#   # require_finding, require_needs_human and min_candidates all default; the
+#   # floor on min_candidates is witness.MIN_AMBIGUITY_CANDIDATES, not a literal.
+#
+#   [[case.expectation.acceptable_resolutions]]
+#   relation = "same_work"
+#   item_ids = ["plex:3:9912", "plex:3:9913"]
+#
+#   [case.provenance]
+#   method = "single_label"
+#
+# Confidence appears nowhere here, and neither does `label_confidence`: a float the
+# scorer weights by has exactly the gaming property that sank the confidence
+# threshold. Uncertainty is expressed by slice reassignment instead -- unsure of the
+# answer means the case *is* ambiguous, so it lands here.
+
+schema_version = 1

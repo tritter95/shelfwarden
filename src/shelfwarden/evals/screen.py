@@ -37,6 +37,7 @@ Two boundaries worth stating out loud:
   `PopulationIndex`.
 """
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -65,7 +66,7 @@ from shelfwarden.compare import (
 )
 from shelfwarden.evals import export as export_module
 from shelfwarden.models.evidence import Source, evidence_id
-from shelfwarden.models.finding import ProblemClass
+from shelfwarden.models.finding import ProblemClass, describes
 from shelfwarden.models.ids import IdNamespace
 from shelfwarden.models.item import (
     AudiobookItem,
@@ -79,7 +80,13 @@ from shelfwarden.models.item import (
 
 SCREEN_FILE = "screen.json"
 SCREEN_MARKDOWN_FILE = "screen.md"
-SCHEMA_VERSION = 1
+# 2 from step 0.6, which added `ItemScreen.trivially_guarded_classes` and
+# `GuardCoverage.trivial`. Step 0.5's `GUARD_TABLE` correction deliberately did
+# *not* move this, because the document shape was unchanged; this changes the
+# shape, so it does. Nothing needs migrating -- screens are regenerable and
+# `datasets/` is not committed -- so the version's job is to make a stored
+# version-1 screen fail loudly in `load_screen` rather than parse short.
+SCHEMA_VERSION = 2
 DEFAULT_SCREEN_ROOT = Path("datasets/screens")
 
 # How many applicable checks an item needs before "guarded" means anything.
@@ -367,6 +374,25 @@ class Check(_Frozen):
 
 
 class ItemScreen(_Frozen):
+    """One item's verdict, and the three-way partition of the fifteen classes.
+
+    **Three buckets, not two.** `guarded` means the screen ran the class's guard
+    and it passed. `trivially_guarded` means the class cannot describe an item of
+    this kind at all -- nobody has to check whether a film uses absolute episode
+    numbering -- so a finding there is a false positive rather than an open
+    question. `unguarded` means nobody checked, and a finding there scores
+    `unverified`.
+
+    Step 0.5 shipped two buckets, and the missing one was silently wrong in both
+    directions. Verified in step 0.6, Finding 5: `absolute_vs_seasonal` was
+    reported *guarded* on all six movies with a well-named file, because its guard
+    predicate `filename_matches_metadata` is applicable to movies. Intersecting the
+    guard with `CLASS_KINDS` instead would have moved those movies into
+    `unguarded_classes`, which the scorer reads as *nobody checked* -- a weaker
+    claim than the one available, and the wrong direction. Hence a third bucket
+    rather than a filter.
+    """
+
     item_id: str
     media_kind: MediaKind
     title: str
@@ -375,6 +401,7 @@ class ItemScreen(_Frozen):
     passed: int
     checks: tuple[Check, ...]
     guarded_classes: tuple[ProblemClass, ...]
+    trivially_guarded_classes: tuple[ProblemClass, ...]
     unguarded_classes: tuple[ProblemClass, ...]
     failing_predicates: tuple[Predicate, ...] = ()
 
@@ -445,6 +472,11 @@ class GuardCoverage(_Frozen):
     guarded: int
     failed: int
     blocked: int
+    # Items whose guard set was answered but whose media kind this class cannot
+    # describe. They are *not* in `in_scope`: counting them there is what inflated
+    # `absolute_vs_seasonal` to eleven guarded items, six of them films (step 0.6,
+    # Finding 5), and `in_scope` is the denominator `fp_rate_snt` publishes.
+    trivial: int = 0
     tier: Tier | None = None
     reason: str | None = None
 
@@ -1220,8 +1252,17 @@ def screen_item(ctx: ScreenContext, item: NormalizedItem) -> ItemScreen:
         verdict = Verdict.INSUFFICIENT
 
     guarded: list[ProblemClass] = []
+    trivial: list[ProblemClass] = []
     unguarded: list[ProblemClass] = []
     for problem_class in ProblemClass:
+        # `describes` is tested first, and deliberately outranks a passing guard.
+        # A class that cannot describe this media kind is trivially guarded whether
+        # or not its predicates happened to answer -- which is the case Finding 5
+        # found: `filename_matches_metadata` PASSes on a well-named film, and that
+        # was being credited as a guard against absolute episode numbering.
+        if not describes(problem_class, item.media_kind):
+            trivial.append(problem_class)
+            continue
         guards = GUARD_TABLE[problem_class]
         if guards and all(status[predicate] is CheckStatus.PASS for predicate in guards):
             guarded.append(problem_class)
@@ -1237,6 +1278,7 @@ def screen_item(ctx: ScreenContext, item: NormalizedItem) -> ItemScreen:
         passed=passed,
         checks=tuple(checks),
         guarded_classes=tuple(guarded),
+        trivially_guarded_classes=tuple(trivial),
         unguarded_classes=tuple(unguarded),
         failing_predicates=failing,
     )
@@ -1255,12 +1297,18 @@ def _guard_coverage(screens: Sequence[ItemScreen]) -> tuple[GuardCoverage, ...]:
                 else Tier.LOCAL
             )
         )
-        in_scope = guarded = failed = blocked = 0
+        in_scope = guarded = failed = blocked = trivial = 0
         if guards:
             for screen in screens:
                 status = {check.predicate: check.status for check in screen.checks}
                 relevant = [status[predicate] for predicate in guards]
                 if all(value is CheckStatus.NOT_APPLICABLE for value in relevant):
+                    continue
+                if not describes(problem_class, screen.media_kind):
+                    # Answered, but about an item this class cannot describe. Counted
+                    # apart rather than dropped: the number is what reconciles this
+                    # row against a screen taken before step 0.6.
+                    trivial += 1
                     continue
                 in_scope += 1
                 if CheckStatus.FAIL in relevant:
@@ -1282,6 +1330,7 @@ def _guard_coverage(screens: Sequence[ItemScreen]) -> tuple[GuardCoverage, ...]:
                 guarded=guarded,
                 failed=failed,
                 blocked=blocked,
+                trivial=trivial,
                 reason=UNGUARDABLE_REASON.get(problem_class),
             )
         )
@@ -1514,7 +1563,20 @@ def load_screen(directory: Path, export_directory: Path | None = None) -> Screen
     different export is a wrong label with a plausible provenance, and it would
     be discovered as an unexplained false-positive rate three steps later.
     """
-    screen = Screen.model_validate_json((directory / SCREEN_FILE).read_bytes())
+    payload = (directory / SCREEN_FILE).read_bytes()
+    stored = json.loads(payload).get("schema_version")
+    if stored != SCHEMA_VERSION:
+        # Correctable per practices §5.4: a version-1 screen has no
+        # `trivially_guarded_classes`, and parsing it would either fail with a
+        # pydantic traceback naming a field the reader has never heard of, or --
+        # worse, had the field been defaulted -- succeed and report every class as
+        # describable everywhere.
+        raise ScreenError(
+            f"{directory / SCREEN_FILE} is schema_version {stored}, not {SCHEMA_VERSION}. "
+            "Screens are regenerable; re-run `shelfwarden screen` against the export "
+            "rather than reading a stored screen from an older shape."
+        )
+    screen = Screen.model_validate_json(payload)
     if export_directory is None:
         return screen
     manifest = export_module.load_manifest(export_directory)
@@ -1602,9 +1664,26 @@ def render_markdown(screen: Screen) -> str:
         "one where a finding scores `unverified` — counted and reported, never pass or",
         "fail.",
         "",
+        "`trivial` counts items whose guard predicates were answered but whose media kind",
+        "the class cannot describe — a film has no episode numbering. Those items are",
+        "**not** in `in scope`, and a finding of that class on one of them is a false",
+        "positive rather than an open question. Before step 0.6 they were counted as",
+        "`guarded`, which inflated this denominator on exactly the classes whose guard",
+        "predicate is shared across media kinds.",
+        "",
     ]
     out += _table(
-        ("problem class", "guards", "tier", "in scope", "guarded", "failed", "blocked", "note"),
+        (
+            "problem class",
+            "guards",
+            "tier",
+            "in scope",
+            "guarded",
+            "failed",
+            "blocked",
+            "trivial",
+            "note",
+        ),
         [
             (
                 str(row.problem_class),
@@ -1614,6 +1693,7 @@ def render_markdown(screen: Screen) -> str:
                 str(row.guarded),
                 str(row.failed),
                 str(row.blocked),
+                str(row.trivial),
                 row.reason or "",
             )
             for row in screen.guard_coverage
@@ -1713,6 +1793,7 @@ __all__ = [
     "PREDICATE_KINDS",
     "PREDICATE_SCOPE",
     "PREDICATE_TIER",
+    "SCHEMA_VERSION",
     "SCREEN_FILE",
     "SCREEN_MARKDOWN_FILE",
     "AuthorityIndex",

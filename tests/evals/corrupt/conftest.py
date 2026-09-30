@@ -12,6 +12,7 @@ are built here instead.
 import pytest
 
 from shelfwarden.evals.corrupt.context import stub_of
+from shelfwarden.models.finding import ProblemClass
 from shelfwarden.models.ids import ItemId, parse_guids
 from shelfwarden.models.item import (
     AudiobookItem,
@@ -22,6 +23,8 @@ from shelfwarden.models.item import (
     MovieItem,
     NormalizedItem,
 )
+
+from ..conftest import FakeLibrary
 
 PROVIDER = "fake"
 MOVIES = "1"
@@ -56,13 +59,17 @@ def _movie_with_edition(rating_key: str, title: str, year: int, edition: str) ->
     )
 
 
-@pytest.fixture
-def edition_family() -> tuple[NormalizedItem, ...]:
-    """Two cuts of one film, each named in its own folder."""
+def _edition_records() -> tuple[NormalizedItem, ...]:
     return (
         _movie_with_edition("501", "Blade Runner", 1982, "Final Cut"),
         _movie_with_edition("502", "Blade Runner", 1982, "Theatrical"),
     )
+
+
+@pytest.fixture
+def edition_family() -> tuple[NormalizedItem, ...]:
+    """Two cuts of one film, each named in its own folder."""
+    return _edition_records()
 
 
 def _series_author() -> tuple[NormalizedItem, ...]:
@@ -112,3 +119,27 @@ def _series_author() -> tuple[NormalizedItem, ...]:
 def series_family() -> tuple[NormalizedItem, ...]:
     """One author, three positioned books under a series folder, one of them split."""
     return _series_author()
+
+
+SERIES_CLASSES = frozenset(
+    {
+        ProblemClass.SERIES_ORDER_BROKEN,
+        ProblemClass.MISSING_SERIES,
+        ProblemClass.MULTI_FILE_SPLIT,
+    }
+)
+
+
+def world_for(problem_class: ProblemClass) -> tuple[NormalizedItem, ...]:
+    """The fixture world that can supply this class.
+
+    The shared library has no book series and no edition folder, so those classes
+    are drawn from the families built here. One function rather than a branch in
+    each suite, because 0.6's truth tests derive from the same cases 0.5's gate
+    checks, and two copies of this choice could quietly test different worlds.
+    """
+    if problem_class in SERIES_CLASSES:
+        return _series_author()
+    if problem_class is ProblemClass.ALTERNATE_CUT:
+        return _edition_records()
+    return tuple(FakeLibrary.build().records.values())

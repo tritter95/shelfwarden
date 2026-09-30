@@ -38,6 +38,7 @@ from shelfwarden.pointer import (
     build,
     escape,
     has_wildcard,
+    matches,
     parse,
     resolve,
     select,
@@ -220,6 +221,45 @@ class TestSelect:
     def test_has_wildcard_reads_segments_not_substrings(self):
         assert has_wildcard("/parts/*/path")
         assert not has_wildcard("/a*b")
+
+
+class TestMatches:
+    """Selector-against-pointer with no document in hand.
+
+    Step 0.6's postcondition tiers are written as selectors (`/parts/*/path`),
+    while a `FieldChange.path` is always concrete (`/parts/0/path`). A dict
+    lookup would miss every part, and `select` needs a document the tier
+    derivation does not have.
+    """
+
+    def test_it_agrees_with_select_on_every_leaf_of_every_media_kind(self):
+        # The property that makes `matches` safe to use in place of `select`: it
+        # says yes to a concrete pointer exactly when `select` would return it.
+        selectors = ("", "/title", "/parts/*", "/parts/*/path", "/parts/0/path", "/guids/*/value")
+        for item in _every_kind():
+            document = dump_item(item)
+            for selector in selectors:
+                selected = {pointer for pointer, _ in select(document, selector)}
+                for pointer in _leaves(document):
+                    assert matches(selector, pointer) == (pointer in selected), (selector, pointer)
+
+    def test_a_selector_naming_an_element_does_not_match_a_field_of_it(self):
+        # Length-sensitive in both directions. A tier on `/parts/*` is a statement
+        # about the element, not about every field beneath it.
+        assert not matches("/parts/*", "/parts/0/path")
+        assert not matches("/parts/*/path", "/parts/0")
+
+    def test_segments_are_compared_decoded(self):
+        # `/a~1b` is one segment, the key `a/b`, not two segments `a` and `b`.
+        assert matches("/a~1b", "/a~1b")
+        assert matches("/*", "/a~1b")
+        assert not matches("/a~1b", "/a/b")
+
+    def test_a_wildcard_in_the_pointer_raises_rather_than_answering_containment(self):
+        # Two selectors ask a different question -- containment, not membership --
+        # and a segment-wise comparison would give it a plausible wrong answer.
+        with pytest.raises(PointerError, match="wildcard on the right"):
+            matches("/parts/*/path", "/parts/*/path")
 
 
 class TestSetAt:

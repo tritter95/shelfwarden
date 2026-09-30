@@ -142,7 +142,7 @@ Detectability (no case ships unproven)
 Corroboration (found by building it)
 - [x] Every emitted case is **re-screened**, and a corruption the screen still guards afterwards is rejected (`screen_intact`). Five verdicts: `broken` / `intact` / `already_failing` / `unavailable` / `unguarded`, comparing **before against after** — with a `NullAuthority` most guards are unavailable anyway, so "not guarded afterwards" alone would report every case as a success
 - [x] **Two `GUARD_TABLE` rows corrected**, both claiming guards they did not have. `episode_wrong_season` was guarded by `season_membership_coherent`, which stays *passing* on a re-parented episode because re-parenting is internally consistent; `absolute_vs_seasonal` was guarded by `episode_numbering_contiguous`, which passes on exactly the numbering it was meant to detect (S01E01..S01E52 is contiguous). Both now key on `filename_matches_metadata`
-- [x] Corruptions declare `induced` (problems created inside the family) and `collateral` (ids **outside** it whose population-scoped guard moved) — verified: corrupting one film strips an untouched film's `duplicate_quality` guard, and with a stale `roots.jsonl` the twin relation goes *asymmetric* and the screen reports a guard that is false
+- [x] Corruptions declare `induced` (problems created inside the family) and `collateral` (ids **outside** it whose population-scoped guard moved) — verified: corrupting one film strips an untouched film's `duplicate_quality` guard, and with a stale `roots.jsonl` the twin relation goes *asymmetric* and the screen reports a guard that is false. **Incomplete as shipped:** it caught only a guard newly broken, not one newly granted. Fixed in 0.6
 - [x] Selection is by **hash rank**, never `random.sample` — verified non-prefix-stable in `k`: `Random(1518).sample(range(24), 5)` selects element 23 and `sample(range(24), 6)` does not. A drawn subject would reset every `case_id` in a cell on a one-case composition edit. A test parses the package and fails on any `sample`/`choices` call
 - [x] Per-case RNG seeded from `(seed, subject_key, class, variant)` — the same tuple `case_id` will hash — so a case is independent of the run it was generated in
 - [x] `subject_key` ladder built here rather than in 0.6, because the RNG needs it: external id → title/year hash → path hash, **never** a rating key
@@ -151,24 +151,35 @@ Corroboration (found by building it)
 - [x] **Done when:** each function has a unit test asserting the mutation applied, the truth record round-trips, and the case is provably detectable
 
 ### 0.6 Truth schema + generator
-- [ ] `TruthFile` schema with `expectation.kind` ∈ `repair | no_action | escalate`
-- [ ] `unexpected: fail` as the **default on every case** (closes the 85%-of-dataset FP blind spot)
-- [ ] `known_other_problems` — verified pre-existing issues, neither required nor penalized
-- [ ] `no_action` narrowed to screen-verified `guarded_classes`; unguarded findings scored `unverified`
-- [ ] `escalate` made threshold-free: `require_finding`, `require_needs_human`, `min_candidates`
-- [ ] `postcondition` + `must_not_change` replace operation matching; generated from the inverse of `corruption.changes`
-- [ ] Semantic `case_id = sha256(slice, problem_class, media_kind, subject_key, corruption_variant)`
-- [ ] `subject_key` ladder (external id → normalized title+year → path hash) — **never** the Plex rating_key
-- [ ] `generator_version` excluded from `case_id`; `corruption_fingerprint` carries it separately
-- [ ] `lineage_id` for baseline keying (not `dataset_id`, which resets on every re-export)
-- [ ] `run_group` — execution grouping that is not a scoring grouping
-- [ ] One case = one atomic repair (one duplicate pair / one author's variant set / one book's split files)
-- [ ] Seeded RNG; reproducible dataset id
-- [ ] `composition.toml` at repo root — per-media-kind and per-class shares, normalized at load
-- [ ] Resolved absolute per-cell targets written into `dataset.json` so datasets stay interpretable without the toml
-- [ ] Curated slice merge — `datasets/curated/real.yaml`, `ambiguous.yaml`
-- [ ] **Explicit per-class deficit reporting** when the export can't fill a slice
-- [ ] **Done when:** `generate --count 200 --seed N` is reproducible and never silently unbalances the dataset
+
+> Design detail, the six verified findings behind it, and the eleven decisions taken: [`plans/step-0.6-truth-schema-generator.md`](./plans/step-0.6-truth-schema-generator.md). Its §10 tracks what remains.
+
+**`[x]` means implemented and tested; `[~]` means implemented and not yet tested.** All of the code is written (uncommitted). Against the fixture export, `generate --count 200 --seed 1518` writes a 25-case dataset, and it is byte-identical across runs and across `PYTHONHASHSEED` 0 and 1. That was checked by hand, and until a test asserts it, it stays a claim.
+
+- [x] `TruthFile` schema with `expectation.kind` ∈ `repair | no_action | escalate`
+- [x] `unexpected: fail` as the **default on every case** — a default on each expectation model, not a value the generator writes (closes the 85%-of-dataset FP blind spot)
+- [x] `known_other_problems` — verified pre-existing issues, neither required nor penalized. Two mechanical sources: the corruption's `induced`, and the classes the clean family already fails per the screen, counted only for classes that can describe the failing item
+- [x] `no_action` narrowed to screen-verified `guarded_classes`; unguarded findings scored `unverified`. A third bucket, `trivially_guarded_classes`, holds classes that cannot describe the item's kind, and a finding there is a false positive
+- [x] `escalate` made threshold-free: `require_finding`, `require_needs_human`, `min_candidates` (read from `witness.MIN_AMBIGUITY_CANDIDATES`, not repeated). The two flags are `Literal[True]`, so a curated case cannot turn them off
+- [x] `postcondition` + `must_not_change` replace operation matching; generated from the inverse of `corruption.changes`. Hard and soft tiers are field tables, and `must_not_change` is the witness pointers minus the delta paths, plus a floor. Ten of the eleven classes carry a postcondition and nine gate on a hard one (`author_name_variant`'s is all soft). Three carry a `resolution`, and `duplicate_quality` carries only a resolution. `/guids` requires the truth's ids **and excludes the ones the corruption injected**. Without that, a repair keeping the donor's id passed, and an item with no ids at all was gated by `contains []`
+- [x] Semantic `case_id = sha256(slice, problem_class, media_kind, subject_key, corruption_variant)`. A collision raises rather than being disambiguated, and a subject shared by two families is excluded from selection and counted. Verified to survive a re-export with every rating key moved. `corruption_fingerprint` does *not* survive one, because it hashes rating keys: a question for 0.8's CI diff
+- [x] `subject_key` ladder (external id → normalized title+year → path hash) — **never** the Plex rating_key. Built and tested in 0.5
+- [x] `generator_version` excluded from `case_id`; `corruption_fingerprint` carries it separately
+- [x] `lineage_id` for baseline keying (not `dataset_id`, which resets on every re-export). Keyed on the library and the generator, **not** on `composition.toml`: editing a share must not discard history
+- [x] `run_group` — execution grouping that is not a scoring grouping
+- [x] One case = one atomic repair (one duplicate pair / one author's variant set / one book's split files)
+- [x] Seeded RNG; reproducible dataset id. No RNG in selection at all: hash rank throughout, and byte-identical across `PYTHONHASHSEED` 0 and 1 in forked processes
+- [x] `composition.toml` at repo root — per-media-kind and per-class shares, normalized at load. It declares all fifteen classes, including the four not yet generable. Targets are apportioned by **sequential Webster**, not largest remainder: largest remainder shrank a cell on a count *increase* 210 times on the committed file (the Alabama paradox), dropping a case and its history
+- [x] Resolved absolute per-cell targets written into `dataset.json` so datasets stay interpretable without the toml. Each cell records both an *intended* and an *achievable* count
+- [x] Curated slice merge — `datasets/curated/real.toml`, `ambiguous.toml`. **TOML, not the spec's YAML**: no new dependency for two files read once (plan Decision 7). They ship empty until 0.9
+- [x] **Explicit per-class deficit reporting** when the export can't fill a slice. Five reasons: `not_implemented`, `no_candidates`, `rejected`, `capped`, `not_curated`. A curated cell always reports `not_curated`, never `not_implemented`: curated slices use no corruption function. Subjects excluded as non-unique are counted in each cell they would have supplied, not only dataset-wide
+- [ ] `shelfwarden eval generate` — the CLI path to the same code (build step 0.6.7)
+
+Two 0.5 defects, fixed here
+- [x] **`collateral` recorded a blast radius in one direction only** — a guard newly *broken*, never one newly *granted*. It now takes a second pass over the pre-corruption keys. A test re-screens the whole world per case and asserts every moved verdict is inside `family ∪ collateral`. It failed against 0.5's code on two cases, one of them missed by the finding that motivated it, and it passes now
+- [x] **The screen credited guards to kinds a class cannot describe** — `absolute_vs_seasonal` was "guarded" on every well-named film. `CLASS_KINDS` now drives a third bucket, and `GuardCoverage.trivial` keeps those items out of `in_scope`. Screen `SCHEMA_VERSION` is now 2, and a version-1 screen is refused. A test asserts that every item a case requires a finding on is a kind its class describes. The plan's `applies_to ⊆ CLASS_KINDS` is false by design, and the correction is recorded in the plan
+
+- [x] **Done when:** `generate --count 200 --seed N` is reproducible and never silently unbalances the dataset. Asserted, not just observed: hash-seed identity, a larger `--count` a superset of a smaller one, and every short cell a deficit row with no re-draw
 
 ### 0.7 Snapshot provider
 - [ ] `SnapshotLibrary` serving the corrupted dataset through the identical `LibraryProvider` protocol
@@ -198,6 +209,7 @@ Corroboration (found by building it)
 - [ ] 20% double-labeled audit sample; inter-rater agreement published once
 - [ ] `provenance` recorded; **no `label_confidence` fed to the scorer**
 - [ ] Uncertainty handled by slice reassignment (unsure of answer → ambiguous; unsure a problem exists → discard)
+- [ ] **Decide the ambiguous slice's class mix before labelling into it.** Today it splits by each medium's synthetic class shares, so `anthology_omnibus` — the class the slice exists for — gets 0 cases at `--count 200` and 1 at 1000, and a labelled case beyond its cell's target is dropped as surplus. Deferred from 0.6 so the shares come from real ambiguous cases rather than a guess (plan `step-0.6` §10)
 - [ ] Adjudication queue for should-not-touch findings produced during real runs; `human_refuted` demotion path
 - [ ] **Done when:** the curated real slice is labeled and the dataset can self-heal from refutations
 

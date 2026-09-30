@@ -38,14 +38,22 @@ from shelfwarden.evals.corrupt.registry import (
     UNSYNTHESIZABLE_REASON,
     attempt,
 )
-from shelfwarden.evals.corrupt.reverse import apply_reverse, render_family
+from shelfwarden.evals.corrupt.reverse import apply_changes, apply_reverse, render_family
 from shelfwarden.evals.corrupt.run import run_corruptions, variant_for
-from shelfwarden.evals.screen import GUARD_TABLE, PREDICATE_TIER, Tier
-from shelfwarden.models.finding import ProblemClass
+from shelfwarden.evals.screen import (
+    GUARD_TABLE,
+    PREDICATE_TIER,
+    NullAuthority,
+    ScreenContext,
+    Tier,
+    screen_item,
+)
+from shelfwarden.evals.truth import required_finding
+from shelfwarden.models.finding import ProblemClass, describes
 from shelfwarden.models.item import MediaKind, with_changes
 
 from ..conftest import FakeLibrary
-from .conftest import survey_inputs
+from .conftest import survey_inputs, world_for
 
 SOURCE_ROOT = Path(__file__).resolve().parents[3] / "src"
 
@@ -64,6 +72,29 @@ def survey(items, classes=None, limit=None, seed=1518):
         classes=classes,
         limit=limit,
     )
+
+
+def _screen_world(items):
+    """Every item's screen outcome, with the population index derived from `items`.
+
+    Everything the screen decides, and nothing it merely cites: an evidence id is
+    a citation, not a verdict.
+    """
+    payload, roots = survey_inputs(items)
+    ctx = ScreenContext.build(
+        export_id="test-export", items=payload, roots=roots, authority=NullAuthority()
+    )
+    outcome = {}
+    for item in payload:
+        screen = screen_item(ctx, item)
+        outcome[str(item.item_id)] = (
+            screen.verdict,
+            tuple((check.predicate, check.status) for check in screen.checks),
+            screen.guarded_classes,
+            screen.trivially_guarded_classes,
+            screen.unguarded_classes,
+        )
+    return outcome
 
 
 @pytest.fixture(scope="module")
@@ -98,19 +129,10 @@ class TestEveryRegisteredCorruption:
 
     @pytest.mark.parametrize("problem_class", sorted(CORRUPTION_TABLE, key=str))
     def test_the_mutation_applies_the_truth_round_trips_and_the_case_is_detectable(
-        self, problem_class, request
+        self, problem_class
     ):
         """The step's gate, per class."""
-        items = _library_items()
-        if problem_class in {
-            ProblemClass.SERIES_ORDER_BROKEN,
-            ProblemClass.MISSING_SERIES,
-            ProblemClass.MULTI_FILE_SPLIT,
-        }:
-            items = request.getfixturevalue("series_family")
-        elif problem_class is ProblemClass.ALTERNATE_CUT:
-            items = request.getfixturevalue("edition_family")
-
+        items = world_for(problem_class)
         run = survey(items, classes=[problem_class])
         assert run.results, (
             f"{problem_class} produced no case; rejections="
@@ -398,6 +420,80 @@ class TestCollateralAndInduced:
         ]
         assert duplicates
         assert all(not result.collateral for result in duplicates)
+
+    @pytest.mark.parametrize("world", ["library", "series_family", "edition_family"])
+    def test_every_screen_result_a_case_moves_is_inside_its_family_or_declared(
+        self, world, request
+    ):
+        """The completeness property of `collateral`, measured rather than argued.
+
+        Step 0.6, Finding 1: screen the whole world before and after each case and
+        diff every item. Step 0.5's `collateral_ids` looked only for outside items
+        that *now* share a corrupted key -- a guard newly broken. It missed the two
+        Blade Runner entries, a real title/year twin pair: renaming one away leaves
+        the other with no twin, and its verdict *improves* from `failed` to
+        `guarded` -- a guard newly granted, and true only inside that case's world.
+
+        The field deliberately over-reports, so the property is a subset.
+        """
+        items = _library_items() if world == "library" else request.getfixturevalue(world)
+        before = _screen_world(items)
+        run = survey(items)
+        assert run.results
+        families = {str(family.root.item_id): family for family in group_families(items)}
+        for result in run.results:
+            after = _screen_world(apply_changes(items, result.changes))
+            declared = (
+                {str(item.item_id) for item in families[result.root_id].records}
+                | {change.item_id for change in result.changes}
+                | set(result.collateral)
+            )
+            moved = {
+                item_id
+                for item_id in before.keys() | after.keys()
+                if before.get(item_id) != after.get(item_id)
+            }
+            assert moved <= declared, (
+                f"{result.problem_class} on {result.root_id} moved undeclared "
+                f"{sorted(moved - declared)}"
+            )
+
+
+# -- class kinds ----------------------------------------------------------
+
+
+class TestClassKinds:
+    @pytest.mark.parametrize("problem_class", sorted(CORRUPTION_TABLE, key=str))
+    def test_every_item_a_case_names_is_a_kind_its_class_describes(self, problem_class):
+        """The consistency `CLASS_KINDS` owes the truth file.
+
+        If a case required a finding on a kind its class cannot describe, the
+        should-not-touch slice would call the same finding on the same kind a false
+        positive, and the dataset would contradict itself.
+
+        Step 0.6's plan asked for `applies_to ⊆ CLASS_KINDS` instead. That is false
+        by design: `applies_to` names the family *root* a corruption is handed, and
+        four classes describe a descendant -- `episode_wrong_season` runs on a show
+        and misfiles an episode.
+        """
+        items = world_for(problem_class)
+        run = survey(items, classes=[problem_class])
+        assert run.results
+        families = {str(family.root.item_id): family for family in group_families(items)}
+        for result in run.results:
+            ground_truth = families[result.root_id].records
+            corrupted = _forward(ground_truth, result.changes)
+            kinds = {str(item.item_id): item.media_kind for item in (*ground_truth, *corrupted)}
+            finding = required_finding(
+                problem_class=problem_class,
+                witness=result.witness,
+                changes=result.changes,
+                ground_truth=ground_truth,
+            )
+            for item_id in finding.item_ids:
+                assert describes(problem_class, kinds[item_id]), (
+                    f"{problem_class} on {result.root_id} names {item_id}, a {kinds[item_id]}"
+                )
 
 
 class TestAddedItems:
