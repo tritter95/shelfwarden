@@ -323,6 +323,27 @@ class Page[T](BaseModel):
         return self
 
 
+def stub_of(item: NormalizedItem) -> ItemStub:
+    """The stub a listing shows for an item: derived from it, never patched beside it.
+
+    Step 0.5 verified what happens when the two drift: with `items.jsonl`
+    corrupted and `roots.jsonl` stale, the twin relation goes *asymmetric* -- the
+    corrupted item finds its victim, the victim does not find it back -- and the
+    screen reports a guard that is not true, silently. A stub is a projection of
+    an item, so it is derived.
+
+    Here rather than in `evals/corrupt/context.py`, where it began: the snapshot
+    provider (step 0.7) lists its records through it, and `library/` must not
+    import `evals/`.
+    """
+    return ItemStub(
+        item_id=item.item_id,
+        media_kind=item.media_kind,
+        title=item.title,
+        year=getattr(item, "year", None),
+    )
+
+
 def with_changes(item: NormalizedItem, changes: Mapping[str, Any]) -> NormalizedItem:
     """Apply field changes and re-validate.
 

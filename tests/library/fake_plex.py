@@ -14,10 +14,13 @@ response container carries `librarySectionID`, as a real one does. The scrub
 removed it from the elements themselves.
 
 Where the fake must decide something only a server decides -- the order of a
-listing, what `title=` matches -- the decision is marked. Step 0.7.4 replaces
-those decisions with the snapshot's named model functions, so the offline suite
-can show `PlexLibrary`'s client logic agrees with them. The live suite then shows
-whether Plex does.
+listing, of an item's children, of the sections, and what `title=` matches -- it
+decides with the snapshot's named model functions (`library.snapshot`). That is
+deliberate, and circular for those four questions by construction. The offline
+suite can therefore show only that `PlexLibrary`'s client logic agrees with the
+model. Whether Plex agrees with the model is the live suite's question. Each
+element is mapped once, with `PlexLibrary`'s own `normalize_item`, so the model
+sees exactly the record the adapter would produce.
 
 Every request is recorded. A request the fake does not route is a test failure,
 never a guess: an unrouted path means either a new plexapi behavior or a bug, and
@@ -34,6 +37,11 @@ from xml.etree import ElementTree as ET
 from plexapi.exceptions import NotFound
 from plexapi.server import PlexServer
 from plexapi.utils import REVERSESEARCHTYPES
+
+from shelfwarden.library.plex import configure_plexapi, normalize_item
+from shelfwarden.library.snapshot import children_key, listing_key, section_key, title_matches
+from shelfwarden.models.item import FetchProfile, NormalizedItem, SectionRef
+from tests.library.conftest import StubServer, build
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "plex"
 
@@ -220,6 +228,17 @@ ROOT = ET.Element(
 LEAF_TYPES = frozenset({"movie", "episode", "track"})
 
 
+def _section_order(section: Section) -> tuple[int, int, str]:
+    return section_key(
+        SectionRef(
+            section_id=section.key,
+            title=section.title,
+            section_type=section.type,
+            agent=section.agent,
+        )
+    )
+
+
 def load_element(name: str) -> ET.Element:
     return ET.fromstring((FIXTURES / f"{name}.xml").read_text(encoding="utf-8"))
 
@@ -241,15 +260,20 @@ class FakePlexServer(PlexServer):
         self.queries: list[tuple[str, dict[str, str]]] = []
         self._sections = {section.key: section for section in sections}
         self._omit_section_id = omit_section_id
-        # rating key -> (section key, element). Insertion order is the listing
-        # order until step 0.7.4 -- a decision only a server makes.
+        # rating key -> (section key, element), and the record PlexLibrary maps each
+        # element to, which is what the model functions order and match on.
+        configure_plexapi()
         self._items: dict[str, tuple[str, ET.Element]] = {}
+        self._records: dict[str, NormalizedItem] = {}
         for entry in library:
             element = entry.element()
             key = element.attrib["ratingKey"]
             if key in self._items:
                 raise AssertionError(f"two entries serve rating key {key}; one server cannot")
             self._items[key] = (entry.section, element)
+            self._records[key] = normalize_item(
+                build(element, StubServer()), entry.section, FetchProfile.CORE
+            )
         super().__init__("http://fake.invalid", "fake-token")
 
     def elements(self) -> list[tuple[str, ET.Element]]:
@@ -286,7 +310,7 @@ class FakePlexServer(PlexServer):
 
     def _section_directory(self) -> ET.Element:
         container = ET.Element("MediaContainer", size=str(len(self._sections)))
-        for section in self._sections.values():
+        for section in sorted(self._sections.values(), key=_section_order):
             ET.SubElement(
                 container,
                 "Directory",
@@ -306,17 +330,15 @@ class FakePlexServer(PlexServer):
         # No `type` means the section's own type: what Plex does for an untyped
         # `/all`, by the plexapi docstring. A server decision, live-checked.
         libtype = REVERSESEARCHTYPES[int(query["type"])] if "type" in query else section.type
-        matches = [
-            element
-            for section_key, element in self._items.values()
+        keys = [
+            key
+            for key, (section_key, element) in self._items.items()
             if section_key == section.key and element.attrib.get("type") == libtype
         ]
         if "title" in query:
-            # Case-insensitive substring: a server decision, replaced by
-            # `snapshot.title_matches` in step 0.7.4 and live-checked after.
-            wanted = query["title"].casefold()
-            matches = [e for e in matches if wanted in e.attrib.get("title", "").casefold()]
-        return self._page(matches, headers, section.key)
+            keys = [key for key in keys if title_matches(query["title"], self._records[key])]
+        keys.sort(key=lambda key: listing_key(self._records[key]))
+        return self._page([self._items[key][1] for key in keys], headers, section.key)
 
     def _metadata(self, rating_key: str) -> ET.Element:
         section_key, element = self._lookup(rating_key)
@@ -334,11 +356,11 @@ class FakePlexServer(PlexServer):
                 f"asked for the children of {rating_key}, a {element.attrib['type']}. "
                 "PlexLibrary answers a leaf without asking the server."
             )
-        children = sorted(
-            (e for _, e in self._items.values() if e.attrib.get("parentRatingKey") == rating_key),
-            key=lambda e: int(e.attrib.get("index", "0")),
+        keys = sorted(
+            (key for key, (_, e) in self._items.items() if e.get("parentRatingKey") == rating_key),
+            key=lambda key: children_key(self._records[key]),
         )
-        return self._page(children, headers, section_key)
+        return self._page([self._items[key][1] for key in keys], headers, section_key)
 
     # -- helpers ----------------------------------------------------------
 

@@ -30,7 +30,7 @@ from shelfwarden.compare import RESOLVABLE_NAMESPACES, SCREEN_POLICY, Policy, fo
 from shelfwarden.evals import export as export_module
 from shelfwarden.evals.corrupt.model import Rejection
 from shelfwarden.models.finding import ProblemClass
-from shelfwarden.models.item import ItemStub, MediaKind, NormalizedItem
+from shelfwarden.models.item import ItemStub, MediaKind, NormalizedItem, stub_of
 
 # How many bytes of a digest seed a `Random`. Eight is the whole of a 64-bit
 # seed; more would be discarded by Mersenne Twister's initialisation anyway.
@@ -200,23 +200,6 @@ class CorruptionContext:
             detail=detail,
             applicable=applicable,
         )
-
-
-def stub_of(item: NormalizedItem) -> ItemStub:
-    """A root stub derived from an item rather than patched alongside one.
-
-    Step 0.5 verified what happens when the two drift: with `items.jsonl`
-    corrupted and `roots.jsonl` stale, the twin relation goes *asymmetric* -- the
-    corrupted item finds its victim, the victim does not find it back -- and the
-    screen reports a guard that is not true, silently. A stub is a projection of
-    an item, so it is derived.
-    """
-    return ItemStub(
-        item_id=item.item_id,
-        media_kind=item.media_kind,
-        title=item.title,
-        year=getattr(item, "year", None),
-    )
 
 
 def group_families(items: Sequence[NormalizedItem]) -> tuple[export_module.Family, ...]:

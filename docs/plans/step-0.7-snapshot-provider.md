@@ -1222,4 +1222,66 @@ The fake's listing order is still insertion order, and its title match is still
 a case-insensitive substring. 0.7.4 replaces both with the snapshot's model
 functions, as planned.
 
-Next: 0.7.4.
+**0.7.4 done, 2026-10-01.** The suite went from 961 to 1038 passing. `ruff` and
+`lint-imports` are clean, and the fixture export and dataset are byte-identical.
+
+- **`library/snapshot.py`.** `SnapshotLibrary` implements the protocol over
+  records in memory. Its public methods are exactly the protocol's seven, and it
+  imports nothing from `evals/`. It answers every edge through the same
+  `library.base` checks `PlexLibrary` uses. It holds one profile: another is
+  refused with a terminal `LibraryUnsupported`, never restamped. A wrong-section
+  id is answered with the right id, worded as `PlexLibrary` words it.
+- **The model of Plex is four named functions, not three:** `listing_key`,
+  `children_key`, `title_matches`, and `section_key`. The plan named the order of
+  `/library/sections` as server behavior but gave it no function. `title_matches`
+  is a case- and form-insensitive substring and does *not* fold accents yet. A
+  test pins that narrower claim, so the live probe has something specific to
+  overturn.
+- **The structural rules are split by what they are about.** Tree rules —
+  duplicate id, missing parent, orphan, parent kind, parent section,
+  grandparent, shared part id — are `models.hierarchy.Rule`, computed by
+  `structural_violations(records)`. They hold for one family as well as for a
+  library, which is what 0.7.5's `world_incoherent` needs.
+
+  Library rules are `snapshot.SnapshotRule`: live provider, provider label,
+  duplicate section, unmodelled section, unknown section, section kind, duplicate
+  rating key, and profile. Two were added beyond the plan's list:
+  - *duplicate rating key*, because Plex keys are server-global, and a
+    wrong-section id can only be answered with the right one when they are;
+  - *duplicate section*.
+
+  `WorldIntegrityError` lists every violation. Its message shows ten and counts
+  the rest; all of them are on `.violations`. Every rule has a test that breaks it
+  **alone**, with the exact rule set asserted. Every tree rule is shown twice:
+  found by the function, and refused at construction.
+- **`stub_of` moved to `models/item.py`**, as `item_sort_key` did, because the
+  snapshot lists through it. `evals.corrupt.context` re-exports it, so no caller
+  changed.
+- **The fake Plex server now serves by the model.** It maps each element once
+  with `PlexLibrary`'s own `normalize_item`, then orders and matches with the
+  four functions. One 0.7.2 test's expected order changed: episodes now list by
+  sort title (*Ebb Tide*, *The Detail*, *The Target*).
+- **The conformance suite landed here, not in 0.7.7.** `test_conformance.py`
+  holds P1–P15, each written to run against any provider over any library. It
+  runs today against two subjects: the snapshot over the hand-built records
+  (`tests/library/snapshots.py`), and `PlexLibrary` over the fake server. Both
+  pass all of it. The suite has teeth: run against today's unfixed `FakeLibrary`,
+  13 of the 15 properties fail, and the two model properties are skipped by
+  declaration.
+
+  That run also found more to fix than the plan's four. Every divergence 0.7.7
+  must fix in `FakeLibrary`:
+  - it lists a photo section instead of refusing it;
+  - its default kind is every kind;
+  - it answers a foreign kind with an empty page instead of refusing it;
+  - its negative-offset slicing now trips `Page` validation;
+  - `find_similar` returns every kind;
+  - `get_files` on an unknown id raises `KeyError`.
+
+  The suite's helper used to hit a `KeyError` on the photo section. It now names
+  the property instead.
+
+What remains of the plan's 0.7.7: `FakeLibrary`'s six fixes and its place as a
+third subject, the differential, the round trip, and the live subject.
+
+Next: 0.7.5.

@@ -606,8 +606,10 @@ class TestListing:
         assert {stub.media_kind for stub in page.items} == {MediaKind.SHOW}
 
     def test_any_kind_the_section_holds_can_be_asked_for(self, provider):
+        """In listing order, which the fake serves by `snapshot.listing_key`: sort
+        title, so "Ebb Tide" leads two episodes of an earlier season."""
         page = provider.list_items("2", 0, 10, MediaKind.EPISODE)
-        assert [str(stub.item_id) for stub in page.items] == ["plex:2:4", "plex:2:9", "plex:2:10"]
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:10", "plex:2:9", "plex:2:4"]
 
     def test_a_kind_the_section_cannot_hold_is_refused_before_the_search(self, fake, provider):
         """It used to be sent, and the answer was whatever the server made of
