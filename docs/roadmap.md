@@ -182,6 +182,9 @@ Two 0.5 defects, fixed here
 - [x] **Done when:** `generate --count 200 --seed N` is reproducible and never silently unbalances the dataset. Asserted, not just observed: hash-seed identity, a larger `--count` a superset of a smaller one, and every short cell a deficit row with no re-draw
 
 ### 0.7 Snapshot provider
+
+> Design detail, the nine verified findings behind it, and the ten decisions taken: [`plans/step-0.7-snapshot-provider.md`](./plans/step-0.7-snapshot-provider.md). Planned, not started.
+
 - [ ] `SnapshotLibrary` serving the corrupted dataset through the identical `LibraryProvider` protocol
 - [ ] Same error taxonomy and pagination semantics as `PlexLibrary`
 - [ ] **Done when:** a provider-conformance test suite passes against both implementations
