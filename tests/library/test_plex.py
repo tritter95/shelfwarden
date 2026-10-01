@@ -17,6 +17,7 @@ from requests.exceptions import Timeout
 
 from shelfwarden.canonical import canonical_json
 from shelfwarden.compare import SupportStrength, compare_title, parse_release_name
+from shelfwarden.evals.export import ITEMS_FILE, ROOTS_FILE, run_export
 from shelfwarden.library import plex as plex_module
 from shelfwarden.library.base import (
     LibraryAuthError,
@@ -42,7 +43,7 @@ from shelfwarden.library.session import StatusRecorder
 from shelfwarden.models.ids import IdNamespace, ItemId
 from shelfwarden.models.item import FetchProfile, MediaKind, dump_item
 from tests.library.conftest import RecordingServer, StubServer, build, load_fixture
-from tests.library.fake_plex import FakePlexServer
+from tests.library.fake_plex import Entry, FakePlexServer
 
 # STUB is excluded deliberately: it describes what a listing returned, not
 # something a caller can ask the server for. See effective_request_params.
@@ -606,7 +607,7 @@ class TestListing:
 
     def test_any_kind_the_section_holds_can_be_asked_for(self, provider):
         page = provider.list_items("2", 0, 10, MediaKind.EPISODE)
-        assert [str(stub.item_id) for stub in page.items] == ["plex:2:4"]
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:4", "plex:2:9", "plex:2:10"]
 
     def test_a_kind_the_section_cannot_hold_is_refused_before_the_search(self, fake, provider):
         """It used to be sent, and the answer was whatever the server made of
@@ -619,11 +620,11 @@ class TestListing:
 
     def test_a_count_only_page_carries_the_true_total(self, provider):
         page = provider.list_items("1", 0, 0)
-        assert (page.returned, page.total) == (0, 3)
+        assert (page.returned, page.total) == (0, 4)
 
     def test_an_offset_past_the_end_is_an_empty_page_not_an_error(self, provider):
         page = provider.list_items("1", 10, 5)
-        assert (page.returned, page.total, page.offset) == (0, 3, 10)
+        assert (page.returned, page.total, page.offset) == (0, 4, 10)
 
     def test_an_unknown_section_says_to_list_the_sections(self, provider):
         """It used to repeat the advice for a stale *item* id."""
@@ -640,7 +641,7 @@ class TestListing:
 class TestChildren:
     def test_a_show_lists_its_seasons(self, provider):
         page = provider.get_children(_plex("2", "2"), 0, 10)
-        assert [str(stub.item_id) for stub in page.items] == ["plex:2:3"]
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:3", "plex:2:8"]
 
     @pytest.mark.parametrize(("section_id", "key"), [("1", "1701"), ("2", "4"), ("3", "7")])
     def test_a_leaf_has_no_children_and_the_server_is_not_asked(
@@ -671,3 +672,120 @@ class TestFindSimilar:
         (author,) = provider.find_similar("3", "Sanderson", 5)
         assert author.media_kind is MediaKind.AUTHOR
         assert provider.find_similar("3", "Words of Radiance", 5) == ()
+
+
+# -- end to end over the fake server (step 0.7.3) -------------------------
+
+
+def _export(tmp_path, name: str):
+    return run_export(PlexLibrary(server=FakePlexServer()), tmp_path / name, count=None)
+
+
+class TestExportOverTheFakeServer:
+    """The export is written against the protocol, so it runs over `PlexLibrary`
+    unchanged, with nothing faked above plexapi's network seam. Its output is what
+    step 0.7.6 turns into a snapshot, and the differential compares the two."""
+
+    def test_every_family_of_every_modelled_section_is_written(self, tmp_path):
+        manifest = _export(tmp_path, "e").manifest
+        assert (manifest.counts.roots, manifest.counts.records) == (6, 16)
+        assert manifest.counts.by_media_kind == {
+            "audiobook": 2,
+            "audiobook_part": 3,
+            "author": 1,
+            "episode": 3,
+            "movie": 4,
+            "season": 2,
+            "show": 1,
+        }
+        assert manifest.dropped == ()
+
+    def test_the_unmodelled_sections_are_skipped_with_their_reasons(self, tmp_path):
+        skipped = {s.section_id: s.reason for s in _export(tmp_path, "e").manifest.skipped_sections}
+        assert set(skipped) == {"4", "5"}
+        assert "music library" in skipped["4"]
+        assert "'photo' sections are not modelled" in skipped["5"]
+
+    def test_the_server_is_named_by_its_hashed_identifier(self, tmp_path):
+        provider = _export(tmp_path, "e").manifest.provider
+        assert provider.server_id == hash_server_id("fake-machine-identifier")
+
+    def test_lock_state_and_an_nfd_path_survive_the_walk(self, tmp_path):
+        items = {str(item.item_id): item for item in _export(tmp_path, "e").items}
+        assert items["plex:3:5"].locked_fields == ("title",)
+        (part,) = items["plex:1:1704"].parts
+        assert unicodedata.is_normalized("NFD", part.path)
+        assert not unicodedata.is_normalized("NFC", part.path)
+
+    def test_two_runs_are_byte_identical(self, tmp_path):
+        first, second = _export(tmp_path, "a").directory, _export(tmp_path, "b").directory
+        for name in (ITEMS_FILE, ROOTS_FILE):
+            assert (first / name).read_bytes() == (second / name).read_bytes()
+
+
+def _many_movies(count: int) -> tuple[Entry, ...]:
+    """`count` copies of one captured film, each with its own key, title and file
+    ids -- enough to make plexapi split a page across several requests."""
+    return tuple(
+        Entry(
+            "movie_no_guids",
+            "1",
+            {
+                "ratingKey": str(5000 + n),
+                "key": f"/library/metadata/{5000 + n}",
+                "title": f"Film {n:03}",
+                "Media@id": str(20000 + 2 * n),
+                "Part@id": str(20001 + 2 * n),
+            },
+        )
+        for n in range(count)
+    )
+
+
+class TestPagingHeaders:
+    """What plexapi puts on the wire for PlexLibrary's two paging arguments.
+
+    The practices doc says `container_start` alone walks the rest of the section
+    and that both arguments stop it. These pin it from the request side: one window
+    per page, split only where plexapi's container size of 100 forces it, and
+    never a request past `limit`."""
+
+    ALL = "/library/sections/1/all"
+
+    def test_a_page_is_one_request_for_exactly_its_window(self, fake, provider):
+        mark = len(fake.queries)
+        provider.list_items("1", 1, 2)
+        assert fake.pages_since(mark) == [(self.ALL, 1, 2)]
+
+    def test_a_count_only_page_asks_for_nothing_but_the_total(self, fake, provider):
+        mark = len(fake.queries)
+        provider.list_items("1", 0, 0)
+        assert fake.pages_since(mark) == [(self.ALL, 0, 0)]
+
+    def test_a_limit_above_the_container_size_is_capped_per_request(self, fake, provider):
+        mark = len(fake.queries)
+        page = provider.list_items("1", 0, 250)
+        assert fake.pages_since(mark) == [(self.ALL, 0, 100)]
+        assert page.returned == page.total == 4
+
+    def test_a_long_page_takes_several_requests_and_stops_at_its_limit(self):
+        fake = FakePlexServer(library=_many_movies(205))
+        provider = PlexLibrary(server=fake)
+
+        mark = len(fake.queries)
+        page = provider.list_items("1", 0, 150)
+        assert (page.returned, page.total) == (150, 205)
+        assert fake.pages_since(mark) == [(self.ALL, 0, 100), (self.ALL, 100, 50)]
+
+        mark = len(fake.queries)
+        page = provider.list_items("1", 200, 100)
+        assert (page.returned, page.total, page.offset) == (5, 205, 200)
+        assert fake.pages_since(mark) == [(self.ALL, 200, 100)]
+
+    def test_children_are_paged_the_same_way(self, fake, provider):
+        mark = len(fake.queries)
+        page = provider.get_children(_plex("2", "2"), 1, 1)
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:8"]
+        assert page.total == 2
+        children = [p for p in fake.pages_since(mark) if p[0].endswith("/children")]
+        assert children == [("/library/metadata/2/children", 1, 1)]

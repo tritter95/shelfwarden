@@ -1172,4 +1172,54 @@ edge semantics and the section check.
 
 The 0.7.1 gap is closed: a negative offset is refused before any request.
 
-Next: 0.7.3.
+**0.7.3 done, 2026-10-01.** The suite went from 936 to 961 passing. `ruff` and
+`lint-imports` are clean.
+
+- **The fake's library is the one §4.5 describes:** four movies, a show with two
+  seasons and three episodes, an author with two books and three parts, a music
+  track, and an empty photo section. Every captured fixture is served under its
+  captured rating key. The one exception is `movie_nfd_path`, whose key 1702 is
+  `movie_legacy_agent`'s. It is served as 1704, which makes it a real duplicate
+  of film 1701 and a title tie for the ordering properties.
+- **Copies are data, not edited files.** Each `Entry` names a fixture and lists
+  its changes, so a reader can tell captured attributes from invented ones.
+- **The captured counts were restated.** They describe the captured library
+  (`childCount="5"`, `leafCount="60"` on the show; `childCount="12"` on the
+  author), not the fake's smaller one. Served as captured, the fake would
+  contradict itself, and its export would fail 0.7.5's derived-copy rule for the
+  fake's fault rather than the code's.
+- **`tests/library/test_fake_plex.py` checks the fake as a library**, at the XML
+  level, against the relations 0.7.5 will check on records: every parent served,
+  in the same section, of the right type; grandparent equal to the parent's
+  parent; denormalized titles and indexes agreeing with what they copy; counts
+  agreeing with the items beneath them; and no media or part id on two items. It
+  also checks each tripwire fires. The music track's album and artist are not
+  served, and the exemption says why: nothing walks an unmodelled section past
+  detection.
+- **The gate:** `run_export(PlexLibrary(FakePlexServer()), count=None)` writes all
+  6 roots and 16 records offline. It skips the music and photo sections, each
+  with its reason, and names the server by its hashed identifier. Lock state and
+  an NFD path survive the walk, and two runs are byte-identical. No unrouted
+  query occurs; one would have raised through the export.
+- **Paging headers are pinned** from the request side, through the server's
+  query log:
+  - a page is one request for exactly its window;
+  - `limit=0` sends `Size: 0`;
+  - a limit of 250 over four films is one request capped at 100, plexapi's
+    container size;
+  - over 205 films, `list_items(0, 150)` is exactly `(0, 100)` then `(100, 50)`,
+    and `list_items(200, 100)` is one request returning five;
+  - `get_children` pages the same way.
+
+  So the practices doc's §4.4 claim — that both arguments stop plexapi's loop at
+  the limit — is now a test rather than a reading of the source.
+
+Four 0.7.2 tests had their expected values updated for the larger library: total
+4 movies rather than 3, three episodes, and two seasons. The behavior they pin is
+unchanged.
+
+The fake's listing order is still insertion order, and its title match is still
+a case-insensitive substring. 0.7.4 replaces both with the snapshot's model
+functions, as planned.
+
+Next: 0.7.4.
