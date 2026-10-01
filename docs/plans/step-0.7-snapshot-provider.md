@@ -1284,4 +1284,58 @@ functions, as planned.
 What remains of the plan's 0.7.7: `FakeLibrary`'s six fixes and its place as a
 third subject, the differential, the round trip, and the live subject.
 
-Next: 0.7.5.
+**0.7.5 done, 2026-10-01.** The suite went from 1038 to 1065 passing. `ruff` and
+`lint-imports` are clean.
+
+- **`DERIVED_COPIES` is in `models/hierarchy.py`.** It covers seven fields:
+  `parent_title`, `grandparent`, `grandparent_title`, `child_count`,
+  `leaf_count`, `album_count` and `part_count`. Each is declared with the kinds
+  that carry it and a derivation that reads primary fields only. Three functions
+  go with it:
+  - `derived_violations` — the absolute check;
+  - `newly_violated` — the relative one, keyed on rule, subject and field, so a
+    count that was wrong and is differently wrong reads as inherited;
+  - `propagate`.
+
+  A test checks every declared field exists on every kind that names it.
+- **`propagate` runs in `registry.attempt`**, after the recipe and before
+  `diff_items`. It sets a copy that agreed with the hierarchy before and
+  disagrees now, and computes a reported copy on an added item. Everything else
+  is left alone, so a quirk in the source stays out of the delta. A test shows
+  one pass is enough.
+- **`world_incoherent` is check 5.** It applies the structural rules, and the
+  derived-copy rule relative to the ground truth, before the witness is asked
+  anything. A forced test shows it rejecting a recipe that deletes a season and
+  keeps its episodes.
+- **The witness guard** raises `CorruptionError` when propagation changes a field
+  the recipe's witness cites. A forced test shows it raising.
+- **The coherence sweep** (`tests/evals/corrupt/test_coherence.py`) runs every
+  recipe over the shared fixture plus an author whose four books each have a
+  part. Against the 0.6 recipes it **failed exactly three ways**, the three
+  Finding 5 names:
+  - `wrong_match` on Cowboy Bebop: 5 stale copies;
+  - `author_name_variant`: 4, from two parts, each caught by the derived-copy
+    rule and by the structural grandparent rule;
+  - `multi_file_split`: 1, the author's album count.
+
+  It passes now. The source's own quirk, `fake:3:412`'s `part_count`, is
+  inherited, not introduced.
+- **Strict `_apply`.** Going forward it checks each `before`, and in reverse each
+  `after`. A REMOVE, or a reversed ADD, checks that the whole record is the one
+  recorded. All four refusal tests failed against the old `reverse.py`. Every
+  0.5 and 0.6 test still passes, including the re-export test.
+- **`truth.py`.** `/grandparent` and `/grandparent_title` joined `SOFT_FIELDS`,
+  after `field_tier` stopped on `/grandparent_title`, exactly as it is meant to
+  on a new path. `required_finding` now drops non-root items whose every change
+  is a derived copy. The comment on the tier tables now counts **eighteen**
+  distinct paths, re-measured.
+
+**The fixture dataset, regenerated and compared with the pre-0.7 run case by
+case.** All 25 `case_id`s are identical, and no `item_ids` moved. `dataset.json`
+is byte-identical. Only two cases changed delta, fingerprint and expectation:
+`wrong_match` `donor_same_section` on `fake:2:201`, and `multi_file_split` on
+`fake:3:411`. In both, the expectation changed only by **soft** postconditions:
+the seasons' and episodes' copied titles, and the author's album count. No hard
+gate or `must_not_change` moved.
+
+Next: 0.7.6.

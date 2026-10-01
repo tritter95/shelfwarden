@@ -29,6 +29,12 @@ from shelfwarden.evals.corrupt.model import ChangeKind, CorruptionError, ItemCha
 from shelfwarden.evals.corrupt.reverse import diff_items, render_family, reverses_cleanly
 from shelfwarden.evals.corrupt.witness import DetectabilityWitness, WitnessKind, WitnessTier
 from shelfwarden.models.finding import ProblemClass
+from shelfwarden.models.hierarchy import (
+    derived_violations,
+    newly_violated,
+    propagate,
+    structural_violations,
+)
 from shelfwarden.models.item import ItemStub, MediaKind, NormalizedItem
 
 
@@ -354,6 +360,25 @@ def cross_check(
     return CrossCheck(verdict=CROSS_BROKEN, guard_predicates=names)
 
 
+def _refuse_a_stale_witness(
+    spec: CorruptionSpec,
+    witness: DetectabilityWitness,
+    propagated: Sequence[tuple[str, str]],
+) -> None:
+    """A witness is built over the recipe's own output, before propagation. If
+    propagation then changed a field the witness cites, the witness describes a
+    world that no longer exists -- a bug in the recipe, so it raises rather than
+    rejects. No current witness cites a derived copy."""
+    cited = set(witness.subjects)
+    pointers = set(witness.pointers)
+    stale = [(item, path) for item, path in propagated if item in cited and path in pointers]
+    if stale:
+        raise CorruptionError(
+            f"{spec.problem_class}: propagation changed {stale}, which the witness cites; "
+            "build the witness from fields Plex does not derive"
+        )
+
+
 def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionContext) -> Outcome:
     """Run one corruption and every acceptance check, in order.
 
@@ -366,12 +391,25 @@ def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionC
        the family.
     4. **reverse_mismatch** -- undoing the delta does not reproduce the ground
        truth byte-for-byte.
-    5. **witness_indiscriminate** -- the evidence does not tell the ground truth
+    5. **world_incoherent** -- the corrupted family is not one Plex could serve:
+       it breaks a structural rule, or it carries a derived copy that disagrees
+       with the hierarchy where the ground truth's agreed. Checked before the
+       witness, because asking whether an impossible world is solvable is the
+       wrong question.
+    6. **witness_indiscriminate** -- the evidence does not tell the ground truth
        and the corrupted value apart, which is the whole point of the step. The
        witness's own anti-circularity check is inside it.
-    6. **screen_intact** -- the screen still guards this class on the corrupted
+    7. **screen_intact** -- the screen still guards this class on the corrupted
        family. Either the corruption did not do what it claims or the guard is
        wrong; neither may reach a dataset.
+
+    Before any check, the derived copies the recipe made stale are brought back
+    in line with the hierarchy (`models.hierarchy.propagate`). A recipe edits the
+    record it is about; Plex would update the copies of it on every neighbour, so
+    the corrupted world must too. That is a pass here rather than a duty of each
+    recipe, because three of them forgot (step 0.7, Finding 5) and a twelfth
+    would. The propagated changes are part of the delta, read back from the dumps
+    like any other.
     """
     applicability = spec.applicable(family, ctx)
     if not applicability.ok:
@@ -382,14 +420,27 @@ def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionC
         return produced
 
     ground_truth = family.records
-    changes = diff_items(ground_truth, produced.items)
+    corrupted, propagated = propagate(ground_truth, produced.items)
+    _refuse_a_stale_witness(spec, produced.witness, propagated)
+    changes = diff_items(ground_truth, corrupted)
     if not changes:
         return ctx.reject("empty_delta", "the corruption returned the family unchanged")
 
-    if not reverses_cleanly(ground_truth, produced.items, changes):
+    if not reverses_cleanly(ground_truth, corrupted, changes):
         return ctx.reject(
             "reverse_mismatch",
             "undoing the recorded delta does not reproduce the ground truth byte-for-byte",
+        )
+
+    incoherent = (
+        *structural_violations(corrupted),
+        *newly_violated(derived_violations(corrupted), derived_violations(ground_truth)),
+    )
+    if incoherent:
+        shown = "; ".join(str(violation) for violation in incoherent[:3])
+        hidden = len(incoherent) - 3
+        return ctx.reject(
+            "world_incoherent", shown + (f"; and {hidden} more" if hidden > 0 else "")
         )
 
     witness = produced.witness
@@ -399,7 +450,7 @@ def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionC
     family_ids = frozenset(str(item.item_id) for item in ground_truth) | {
         change.item_id for change in changes
     }
-    roots_after = _roots_after(ctx.roots, family_ids, produced.items)
+    roots_after = _roots_after(ctx.roots, family_ids, corrupted)
     # Scoped to what the delta touched, plus the family's roots. Two reasons, and
     # the second is easy to miss:
     #
@@ -414,13 +465,13 @@ def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionC
     ) | frozenset(
         str(item.item_id) for item in ground_truth if getattr(item, "parent", None) is None
     )
-    checked = cross_check(spec, ctx, ground_truth, produced.items, ctx.roots, roots_after, touched)
+    checked = cross_check(spec, ctx, ground_truth, corrupted, ctx.roots, roots_after, touched)
     if checked.verdict == CROSS_INTACT:
         return ctx.reject("screen_intact", checked.detail)
 
     added_roots = tuple(
         stub_of(item)
-        for item in produced.items
+        for item in corrupted
         if getattr(item, "parent", None) is None
         and str(item.item_id) in {c.item_id for c in changes if c.kind is ChangeKind.ADD}
     )
@@ -434,10 +485,10 @@ def attempt(spec: CorruptionSpec, family: export_module.Family, ctx: CorruptionC
         witness=witness,
         cross_check=checked,
         induced=tuple(sorted(set(spec.induces) | set(produced.induced))),
-        collateral=collateral_ids(ctx.roots, family_ids, produced.items),
+        collateral=collateral_ids(ctx.roots, family_ids, corrupted),
         added_roots=added_roots,
         ground_truth_sha256=_digest(render_family(ground_truth)),
-        corrupted_sha256=_digest(render_family(produced.items)),
+        corrupted_sha256=_digest(render_family(corrupted)),
     )
 
 

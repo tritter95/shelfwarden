@@ -55,6 +55,7 @@ from shelfwarden.evals.corrupt.context import rank_key
 from shelfwarden.evals.corrupt.model import ChangeKind, ItemChange
 from shelfwarden.evals.corrupt.witness import MIN_AMBIGUITY_CANDIDATES, DetectabilityWitness
 from shelfwarden.models.finding import ProblemClass, describes
+from shelfwarden.models.hierarchy import DERIVED_PATHS
 from shelfwarden.models.item import MediaKind, NormalizedItem
 from shelfwarden.pointer import JSONValue, has_wildcard, matches
 
@@ -193,10 +194,17 @@ HARD_FIELDS: tuple[str, ...] = (
 # truth record holds a *suggested* filename per the implementation plan's own word.
 # A rename is a Phase 3 operation; gating it here would score a correct diagnosis
 # as a failure.
+#
+# `/grandparent` and `/grandparent_title` joined in step 0.7, when propagation began
+# carrying the copies Plex derives from the hierarchy into the delta. Plex derives
+# both, which is the whole reason for this tier, and they stopped at `field_tier`
+# exactly as that function intends a new path to.
 SOFT_FIELDS: tuple[str, ...] = (
     "/summary",
     "/parent",
     "/parent_title",
+    "/grandparent",
+    "/grandparent_title",
     "/child_count",
     "/leaf_count",
     "/album_count",
@@ -207,8 +215,9 @@ SOFT_FIELDS: tuple[str, ...] = (
 )
 
 # Neither table is exhaustive over the model, on purpose. Between them they cover
-# every path the eleven corruptions touch -- measured: sixteen distinct paths -- and
-# nothing else. Widening them speculatively (`/rating`, `/locked_fields`) would put
+# every path the eleven corruptions touch -- measured: eighteen distinct paths, the
+# last two (`/grandparent`, `/grandparent_title`) added by step 0.7's propagation --
+# and nothing else. Widening them speculatively (`/rating`, `/locked_fields`) would put
 # a tier on a field with no case behind it, and the first corruption to touch one
 # would inherit a gate chosen by guesswork instead of stopping in `field_tier`.
 
@@ -228,7 +237,7 @@ def field_tier(path: str) -> Tier:
     a document, and there is none in hand here.
 
     A path in **neither** table raises. Every path the eleven corruptions touch is
-    covered today (measured: sixteen distinct paths), and a twelfth class that
+    covered today (measured: eighteen distinct paths), and a twelfth class that
     touches something new should stop here rather than silently acquire a gate
     nobody chose.
     """
@@ -797,11 +806,26 @@ def required_finding(
         # The items a finding of this class must name: the pre-existing items the
         # delta modified. Not the postcondition's key set, which reaches further --
         # repairing a split book re-parents its parts.
+        #
+        # Less any non-root item whose only changes are derived copies. Since step
+        # 0.7 a wrong-matched show's seasons and episodes carry its new title in the
+        # delta, because Plex would; a finding about the show is not *about* them.
+        # Roots stay: `absolute_vs_seasonal` names its show for a rewritten
+        # `/child_count`, and whether it should is 0.8's open question, not this
+        # rule's to settle. Written so that no case's ids moved when it landed.
+        roots = {
+            str(item.item_id) for item in ground_truth if getattr(item, "parent", None) is None
+        }
         item_ids = tuple(
             sorted(
                 change.item_id
                 for change in changes
-                if change.kind is ChangeKind.MODIFY and change.item_id in ground_truth_ids
+                if change.kind is ChangeKind.MODIFY
+                and change.item_id in ground_truth_ids
+                and (
+                    change.item_id in roots
+                    or any(field.path not in DERIVED_PATHS for field in change.fields)
+                )
             )
         )
     if not item_ids:

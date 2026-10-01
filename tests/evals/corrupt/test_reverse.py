@@ -221,3 +221,41 @@ class TestItemChangeShape:
         )
         with pytest.raises(CorruptionError, match="not in the set"):
             apply_changes(family, delta)
+
+
+class TestADeltaAppliesOnlyToTheWorldItWasRecordedAgainst:
+    """Step 0.7, Finding 7: forward application wrote `after` without reading what
+    was there, so a delta applied to another export built a hybrid record and
+    raised nothing. 0.7 is the first step to apply a delta to a world loaded from
+    a separate file."""
+
+    def test_forward_refuses_a_modify_whose_before_is_not_there(self, family):
+        changes = diff_items(family, (with_changes(family[0], {"title": "Solaris"}),))
+        elsewhere = (with_changes(family[0], {"title": "Heat"}),)
+        with pytest.raises(CorruptionError, match="not the world this delta was recorded"):
+            apply_changes(elsewhere, changes)
+
+    def test_reverse_refuses_a_modify_whose_after_is_not_there(self, family):
+        changes = diff_items(family, (with_changes(family[0], {"title": "Solaris"}),))
+        with pytest.raises(CorruptionError, match="not the world this delta was recorded"):
+            apply_reverse(family, changes)
+
+    def test_forward_refuses_to_remove_an_item_that_is_not_the_one_recorded(self, family):
+        changes = diff_items(family, ())
+        changed = (with_changes(family[0], {"year": 2002}),)
+        with pytest.raises(CorruptionError, match="not the world this delta was recorded"):
+            apply_changes(changed, changes)
+
+    def test_reverse_refuses_to_remove_an_added_item_that_has_since_changed(self, family):
+        moved = {**dump_item(family[0])["item_id"], "rating_key": "999"}
+        clone = with_changes(family[0], {"item_id": moved})
+        changes = diff_items(family, (*family, clone))
+        drifted = (*family, with_changes(clone, {"title": "Heat"}))
+        with pytest.raises(CorruptionError, match="not the world this delta was recorded"):
+            apply_reverse(drifted, changes)
+
+    def test_the_world_it_was_recorded_against_still_applies_both_ways(self, family):
+        after = (with_changes(family[0], {"title": "Solaris"}),)
+        changes = diff_items(family, after)
+        assert render_family(apply_changes(family, changes)) == render_family(after)
+        assert render_family(apply_reverse(after, changes)) == render_family(family)

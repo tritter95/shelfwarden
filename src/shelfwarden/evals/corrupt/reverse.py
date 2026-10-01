@@ -30,7 +30,7 @@ from shelfwarden.evals.corrupt.model import (
 )
 from shelfwarden.models.ids import item_sort_key
 from shelfwarden.models.item import NormalizedItem, dump_item, load_item
-from shelfwarden.pointer import JSONValue, set_at
+from shelfwarden.pointer import JSONValue, PointerError, resolve, set_at
 
 
 def family_sort_key(item: NormalizedItem) -> tuple[tuple[int, int, str], int, tuple[int, int, str]]:
@@ -124,6 +124,13 @@ def _apply(
         if kind is ChangeKind.REMOVE:
             if change.item_id not in current:
                 raise CorruptionError(f"cannot remove {change.item_id}: it is not in the set")
+            # A REMOVE going forward and a reversed ADD both carry the record they
+            # expect to take away. Taking away anything else would leave a world the
+            # delta does not describe.
+            if change.record is not None and canonical_json(
+                dump_item(current[change.item_id])
+            ) != canonical_json(change.record):
+                raise _elsewhere(change.item_id, "", "the whole record", "a different one")
             del current[change.item_id]
             continue
         if kind is ChangeKind.ADD:
@@ -137,12 +144,37 @@ def _apply(
             raise CorruptionError(f"cannot modify {change.item_id}: it is not in the set")
         document = dump_item(current[change.item_id])
         for field in change.fields:
-            set_at(document, field.path, field.after if forward else field.before)
+            expected, written = (
+                (field.before, field.after) if forward else (field.after, field.before)
+            )
+            try:
+                found = resolve(document, field.path)
+            except PointerError as exc:
+                raise _elsewhere(change.item_id, field.path, expected, f"nothing ({exc})") from exc
+            if canonical_json(found) != canonical_json(expected):
+                raise _elsewhere(change.item_id, field.path, expected, found)
+            set_at(document, field.path, written)
         # Re-validated rather than trusted: a corruption that wrote a string into
         # an int field must fail here, not in the truth file. This is the same
         # reason `with_changes` exists rather than `model_copy(update=...)`.
         current[change.item_id] = load_item(document)
     return tuple(sorted(current.values(), key=family_sort_key))
+
+
+def _elsewhere(item_id: str, path: str, expected: object, found: object) -> CorruptionError:
+    """A delta asked to apply to a world it was not recorded against.
+
+    Step 0.7, Finding 7: application used to write without reading, so a delta
+    applied to another export built a hybrid record and raised nothing. Within
+    0.5 and 0.6 that could not happen, because each delta was applied to the
+    items it was diffed from. The snapshot's world builder is the first consumer
+    to load the two from separate files.
+    """
+    return CorruptionError(
+        f"{item_id}{path} holds {found!r} where the delta expects {expected!r}: this is "
+        "not the world this delta was recorded against. Check that the export is the "
+        "one the dataset was generated from."
+    )
 
 
 def apply_changes(
