@@ -37,12 +37,14 @@ from shelfwarden.canonical import canonical_json
 from shelfwarden.config import iter_secret_hits
 from shelfwarden.evals import census as census_module
 from shelfwarden.library.base import (
+    SECTION_ROOT_KIND,
     LibraryItemNotFound,
     LibraryProvider,
     LibraryUnsupported,
     ProviderInfo,
 )
-from shelfwarden.models.ids import ItemId
+from shelfwarden.models.hierarchy import CHILD_KIND
+from shelfwarden.models.ids import ItemId, item_sort_key
 from shelfwarden.models.item import (
     FetchProfile,
     ItemStub,
@@ -69,21 +71,10 @@ PAGE_SIZE = 100
 # exceptions that quietly absorbs a real regression.
 VOLATILE_MANIFEST_FIELDS: frozenset[str] = frozenset({"created_at"})
 
-# Which media kind is a section's root, and what hangs beneath it. Movie families
-# are a single record; the other two are three levels deep and structurally
-# identical to each other.
-SECTION_ROOT_KIND: dict[str, MediaKind] = {
-    "movie": MediaKind.MOVIE,
-    "show": MediaKind.SHOW,
-    "artist": MediaKind.AUTHOR,
-}
-
-CHILD_KIND: dict[MediaKind, MediaKind] = {
-    MediaKind.SHOW: MediaKind.SEASON,
-    MediaKind.SEASON: MediaKind.EPISODE,
-    MediaKind.AUTHOR: MediaKind.AUDIOBOOK,
-    MediaKind.AUDIOBOOK: MediaKind.AUDIOBOOK_PART,
-}
+# Which media kind is a section's root (`SECTION_ROOT_KIND`) and what hangs
+# beneath it (`CHILD_KIND`) are imported from `library.base` and
+# `models.hierarchy`: the export walks the same tree every provider serves, so it
+# reads the same table rather than keeping a copy.
 
 # Ordering only. Root kinds sort before their descendants so a family reads
 # top-down in the JSONL.
@@ -214,17 +205,6 @@ class ExportResult:
 
 
 # -- ordering -------------------------------------------------------------
-
-
-def item_sort_key(item_id: ItemId) -> tuple[int, int, str]:
-    """Numeric rating keys sort numerically; anything else sorts after, by text.
-
-    Lexicographic ordering alone would be deterministic but would put `"10"`
-    before `"9"`, which makes a hand-read of the JSONL needlessly confusing for no
-    gain.
-    """
-    key = item_id.rating_key
-    return (0, int(key), "") if key.isdigit() else (1, 0, key)
 
 
 def _stub_sort_key(stub: ItemStub) -> tuple[tuple[int, int, str], tuple[int, int, str]]:

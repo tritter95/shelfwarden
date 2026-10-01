@@ -55,8 +55,10 @@ jobs:
       - name: import contracts
         run: uv run lint-imports
 
+      # `live` is deselected here and skipped by tests/conftest.py unless
+      # --run-live is passed. Opt-in twice, so neither alone is load-bearing.
       - name: tests
-        run: uv run pytest -q -m "not slow"
+        run: uv run pytest -q -m "not slow and not live"
 
       # Each gate command is its own step so a red build names the failure
       # without anyone opening the log.
@@ -88,6 +90,8 @@ jobs:
       - name: install
         run: uv sync --locked --group dev
 
-      # No -m filter: slow cases run here and nowhere else.
+      # Slow cases run here and nowhere else. `live` never runs in CI: without
+      # this filter, the "everything" job is exactly where a live test would
+      # reach for a server (step 0.7, Finding 8).
       - name: tests (including slow)
-        run: uv run pytest -q
+        run: uv run pytest -q -m "not live"

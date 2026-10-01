@@ -12,10 +12,18 @@ from shelfwarden.models.ids import (
     ExternalId,
     IdNamespace,
     ItemId,
+    item_sort_key,
     parse_guid,
     parse_guids,
     sort_external_ids,
 )
+
+
+def test_rating_keys_sort_numerically_and_anything_else_after():
+    """`"10"` after `"9"`, and a minted `sw…` key after every number."""
+    keys = ["10", "sw1a", "9", "2", "sw0b"]
+    ordered = sorted((ItemId("plex", "1", key) for key in keys), key=item_sort_key)
+    assert [item_id.rating_key for item_id in ordered] == ["2", "9", "10", "sw0b", "sw1a"]
 
 
 class TestItemId:

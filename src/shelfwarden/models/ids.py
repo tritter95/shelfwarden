@@ -101,6 +101,21 @@ class ItemId:
         return cls(*parts)
 
 
+def item_sort_key(item_id: ItemId) -> tuple[int, int, str]:
+    """Numeric rating keys sort numerically; anything else sorts after, by text.
+
+    Lexicographic ordering alone would be deterministic but would put `"10"`
+    before `"9"`, which makes a hand-read of the JSONL needlessly confusing for no
+    gain.
+
+    Here rather than in `evals/export.py`, where it began: the snapshot provider
+    (step 0.7) orders what it serves by the same key, and `library/` must not
+    import `evals/`.
+    """
+    key = item_id.rating_key
+    return (0, int(key), "") if key.isdigit() else (1, 0, key)
+
+
 @dataclass(frozen=True, slots=True)
 class ExternalId:
     """A parsed guid. `raw` is always the exact string Plex returned."""

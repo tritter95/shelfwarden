@@ -40,17 +40,24 @@ from requests.exceptions import RequestException, Timeout
 
 from shelfwarden.library.audiobook import AudiobookVerdict, TrackSample, classify_section
 from shelfwarden.library.base import (
+    SECTION_ROOT_KIND,
     LibraryAuthError,
     LibraryError,
     LibraryItemNotFound,
     LibraryProtocolError,
     LibraryRateLimited,
     LibraryRequestError,
+    LibrarySectionNotFound,
     LibraryUnavailable,
     LibraryUnsupported,
     ProviderInfo,
+    check_fetchable,
+    check_page,
+    check_search,
+    resolve_kind,
 )
 from shelfwarden.library.session import StatusRecorder, build_session, status_from_message
+from shelfwarden.models.hierarchy import CHILD_KIND
 from shelfwarden.models.ids import ItemId, parse_guids
 from shelfwarden.models.item import (
     AudiobookItem,
@@ -74,12 +81,9 @@ PROVIDER = "plex"
 # How many tracks to sample when deciding whether a Music section is audiobooks.
 AUDIOBOOK_SAMPLE_SIZE = 40
 
-# Plex's own section vocabulary. There is no audiobook type -- see library/audiobook.py.
-SECTION_TYPE_TO_KIND: dict[str, MediaKind] = {
-    "movie": MediaKind.MOVIE,
-    "show": MediaKind.SHOW,
-    "artist": MediaKind.AUTHOR,
-}
+# Which section types are modelled, and what kind each one's roots are, is
+# `library.base.SECTION_ROOT_KIND`: every provider and the export share it. The two
+# tables below are Plex's alone -- its item-type and libtype strings.
 
 PLEX_TYPE_TO_KIND: dict[str, MediaKind] = {
     "movie": MediaKind.MOVIE,
@@ -368,7 +372,7 @@ class PlexLibrary:
         for section in self._server.library.sections():
             if str(section.key) == str(section_id):
                 return section
-        raise LibraryItemNotFound(f"no section with id {section_id!r}")
+        raise LibrarySectionNotFound(f"no section with id {section_id!r}")
 
     @_translates_errors
     def audiobook_verdict(self, section_id: str) -> AudiobookVerdict:
@@ -404,7 +408,7 @@ class PlexLibrary:
         return verdict
 
     def _require_supported(self, section: Any) -> None:
-        if section.type not in SECTION_TYPE_TO_KIND:
+        if section.type not in SECTION_ROOT_KIND:
             raise LibraryUnsupported(
                 f"{section.type!r} sections are not modelled; ShelfWarden handles "
                 "movie, show, and audiobook (artist) sections"
@@ -431,10 +435,15 @@ class PlexLibrary:
         `limit` is required, and deliberately has no default: passing
         `container_start` without `maxresults` does not fetch a page, it walks the
         entire remaining result set, and nothing in the result says that happened.
+
+        Paging arguments are refused before any request, and a kind the section
+        cannot hold before the search: plexapi would send either to the server,
+        whose answer is undefined.
         """
+        check_page(offset, limit)
         section = self._section(section_id)
         self._require_supported(section)
-        kind = media_kind or SECTION_TYPE_TO_KIND[section.type]
+        kind = resolve_kind(section.type, media_kind)
 
         results = section.search(
             libtype=KIND_TO_LIBTYPE[kind],
@@ -456,7 +465,14 @@ class PlexLibrary:
         Both paging arguments again: a show with 300 episodes is not a special
         case, it is Tuesday.
         """
+        check_page(offset, limit)
         parent = self._fetch(item_id)
+        if _kind_of(parent) not in CHILD_KIND:
+            # A movie, an episode, a part: nothing hangs beneath it. Answered here
+            # rather than asked, because what Plex returns for the `/children` of a
+            # leaf is unverified, and an empty page is the only answer the model
+            # admits.
+            return Page[ItemStub](items=(), total=0, offset=offset, returned=0)
         results = parent.fetchItems(
             f"/library/metadata/{item_id.rating_key}/children",
             container_start=offset,
@@ -472,19 +488,65 @@ class PlexLibrary:
 
     @_translates_errors
     def find_similar(self, section_id: str, title: str, limit: int) -> tuple[ItemStub, ...]:
+        """Root items of a section whose title matches.
+
+        The root kind is sent explicitly. plexapi's search sends no `type` at all
+        when none is given, leaving the kinds to the server's default for an untyped
+        `/all`; naming it makes the answer ours. On an audiobook section that means
+        authors, never books -- faithful to Plex, and recorded as a limit in step
+        0.7's plan.
+        """
+        check_search(title, limit)
         section = self._section(section_id)
         self._require_supported(section)
-        results = section.search(title=title, container_start=0, maxresults=limit)
+        results = section.search(
+            title=title,
+            libtype=KIND_TO_LIBTYPE[SECTION_ROOT_KIND[section.type]],
+            container_start=0,
+            maxresults=limit,
+        )
         return tuple(self._stub(obj, section_id) for obj in results)
 
     # -- items ------------------------------------------------------------
 
     def _fetch(self, item_id: ItemId) -> Any:
+        """The plexapi object an id names, once the id is shown to name it.
+
+        A rating key is server-global, so the section half of an id never reaches
+        the server and nothing there checks it. Three checks happen here instead:
+
+        * **The key is decimal.** Anything else used to raise a bare `ValueError`
+          from `int()`, outside the taxonomy, on what is usually a typo.
+        * **The item is in the section the id names.** Without this,
+          `plex:999:1701` fetched the film in section 1 and came back stamped
+          `plex:999:1701`: a well-formed id for a section the item is not in.
+          plexapi copies the response container's `librarySectionID` onto every
+          item it builds. A response without one is refused, never trusted,
+          because trusting it is the fabrication this check exists to stop.
+        * **The section is one this project models.** Listings already refuse a
+          music section. A fetch by id bypassed that, and read a music track as an
+          audiobook part.
+        """
         if item_id.provider != PROVIDER:
             raise LibraryItemNotFound(
                 f"{item_id} belongs to provider {item_id.provider!r}, not {PROVIDER!r}"
             )
-        return self._server.fetchItem(int(item_id.rating_key))
+        obj = self._server.fetchItem(_rating_key(item_id))
+        located = getattr(obj, "librarySectionID", None)
+        if located is None:
+            raise LibraryProtocolError(
+                f"the server did not say which section item {item_id.rating_key} is in, "
+                "so its id cannot be checked; stamping the caller's section onto it "
+                "would fabricate one"
+            )
+        if str(located) != item_id.section_id:
+            raise LibraryItemNotFound(
+                f"{item_id} names section {item_id.section_id!r}, but rating key "
+                f"{item_id.rating_key} is in section {str(located)!r}",
+                next_action=f"use {ItemId(PROVIDER, str(located), item_id.rating_key)}",
+            )
+        self._require_supported(self._section(item_id.section_id))
+        return obj
 
     @_translates_errors
     def get_item(
@@ -492,6 +554,7 @@ class PlexLibrary:
         item_id: ItemId,
         profile: FetchProfile = FetchProfile.CORE,
     ) -> NormalizedItem:
+        check_fetchable(profile)
         obj = self._fetch(item_id)
         obj.reload(**RELOAD_INCLUDES[profile])
         _assert_object_autoreload_off(obj)
@@ -526,6 +589,17 @@ def hash_server_id(machine_id: str) -> str:
     came from the same server -- and discards the rest.
     """
     return hashlib.sha256(machine_id.encode("utf-8")).hexdigest()[:16]
+
+
+def _rating_key(item_id: ItemId) -> int:
+    """The decimal key Plex addresses an item by, refused before any request when
+    the id holds anything else."""
+    key = item_id.rating_key
+    if not (key.isascii() and key.isdigit()):
+        raise LibraryItemNotFound(
+            f"{item_id} has rating key {key!r}; Plex rating keys are decimal numbers"
+        )
+    return int(key)
 
 
 def _assert_object_autoreload_off(obj: Any) -> None:

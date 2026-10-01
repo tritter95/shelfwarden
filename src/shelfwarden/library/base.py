@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar, Protocol, runtime_checkable
 
+from shelfwarden.models.hierarchy import lineage
 from shelfwarden.models.ids import ItemId
 from shelfwarden.models.item import (
     FetchProfile,
@@ -22,6 +23,30 @@ from shelfwarden.models.item import (
     Page,
     SectionRef,
 )
+
+# Plex's section vocabulary, mapped onto ours. There is no audiobook section type
+# -- an audiobook library is an `artist` section, see library/audiobook.py -- and
+# a `photo` section maps to nothing at all. That absence is the point: it is how
+# every provider, and the export, learns a section is not modelled.
+SECTION_ROOT_KIND: dict[str, MediaKind] = {
+    "movie": MediaKind.MOVIE,
+    "show": MediaKind.SHOW,
+    "artist": MediaKind.AUTHOR,
+}
+
+# Every kind a section can hold, top-down. Derived from the root and the
+# hierarchy rather than listed, so it cannot disagree with either.
+SECTION_KINDS: dict[str, tuple[MediaKind, ...]] = {
+    section_type: lineage(root) for section_type, root in SECTION_ROOT_KIND.items()
+}
+
+# Provider labels that name a real server. An export holds the user's real rating
+# keys, so a snapshot served under one of these labels would make every snapshot
+# address a live address as well -- and in Phase 3, a plan recorded during an eval
+# run would be one handoff away from editing a real item. `SnapshotLibrary`
+# (step 0.7) refuses them. A test pins this set to `library.plex.PROVIDER`
+# instead of importing the adapter here.
+LIVE_PROVIDERS: frozenset[str] = frozenset({"plex"})
 
 # plexapi method names that mutate server state. Named here rather than in the
 # test so the list is documentation as well as an assertion: these are the
@@ -143,6 +168,17 @@ class LibraryItemNotFound(LibraryError):
     )
 
 
+class LibrarySectionNotFound(LibraryItemNotFound):
+    """The section id resolved to nothing.
+
+    A subclass, so anything catching "that id does not exist" still catches it, but
+    with its own next action: advice about re-listing a section to find an item id
+    is the wrong fix for a section id.
+    """
+
+    default_next_action = "list the library's sections and use one of the ids it returns"
+
+
 class LibraryRateLimited(LibraryError):
     retryability = Retryability.RETRYABLE
 
@@ -157,6 +193,24 @@ class LibraryRequestError(LibraryError):
     """A request the server refused on its merits -- a 4xx that is not 401 or 404."""
 
     retryability = Retryability.TERMINAL
+
+
+class LibraryInvalidArgument(LibraryError):
+    """An argument no library can answer: a negative offset, a kind the section
+    cannot hold, a blank search.
+
+    Raised before any request is made, which is what separates it from
+    `LibraryRequestError`: that one is terminal and means the *server* refused.
+    This one is correctable, because the caller -- in Phase 1, the model, through a
+    tool argument -- can send something else.
+
+    Deliberately without a default next action. The fix depends on the argument
+    ("offset is >= 0" helps nobody who sent a bad media kind), so every raise site
+    must name its own, and the base class's construction check makes forgetting
+    one an error rather than a vague message.
+    """
+
+    retryability = Retryability.CORRECTABLE
 
 
 class LibraryUnsupported(LibraryError):
@@ -174,6 +228,86 @@ class LibraryProtocolError(LibraryError):
     """The server answered in a shape we cannot map, or a local invariant broke."""
 
     retryability = Retryability.TERMINAL
+
+
+def check_page(offset: int, limit: int) -> None:
+    """Refuse paging arguments that have no defined answer, before anything is fetched.
+
+    Left unchecked, each provider invents one. plexapi sends both straight to the
+    server: `container_start or 0` lets a negative offset through, and a negative
+    `maxresults` becomes a negative container size. Python slicing is worse,
+    because it answers: `items[-1:99]` is the last item, a believable page for a
+    meaningless request.
+
+    `limit == 0` is legal. It is Plex's count-only query -- an empty page carrying
+    the true total -- and every provider answers it the same way.
+    """
+    if offset < 0:
+        raise LibraryInvalidArgument(
+            f"offset must be 0 or more; got {offset}.",
+            next_action="pass offset=0 to start at the beginning, or the previous "
+            "page's offset plus its `returned` count to continue",
+        )
+    if limit < 0:
+        raise LibraryInvalidArgument(
+            f"limit must be 0 or more; got {limit}.",
+            next_action="pass a positive limit to get a page of results, or 0 to get "
+            "only the total",
+        )
+
+
+def check_search(title: str, limit: int) -> None:
+    """Refuse a title search that has no defined answer, before anything is fetched.
+
+    A blank title matches every item in the section, which is a listing wearing a
+    search's name -- and an unpaged one, since a search returns no total.
+    """
+    if not title.strip():
+        raise LibraryInvalidArgument(
+            "a title search needs a title; got a blank one.",
+            next_action="pass the title to look for, or list the section instead of searching it",
+        )
+    if limit < 0:
+        raise LibraryInvalidArgument(
+            f"limit must be 0 or more; got {limit}.",
+            next_action="pass a positive limit for up to that many matches",
+        )
+
+
+def check_fetchable(profile: FetchProfile) -> None:
+    """`STUB` marks a record a listing produced; nobody can ask for one.
+
+    A `ValueError`, not a `LibraryError`. The profile is chosen by our code, never by
+    the model, so asking for `STUB` is a bug in the caller -- and a bug should not
+    be dressed as a library failure.
+    """
+    if profile is FetchProfile.STUB:
+        offered = ", ".join(str(p) for p in FetchProfile if p is not FetchProfile.STUB)
+        raise ValueError(
+            f"{profile} is what a listing returns, not something a caller can fetch. "
+            f"Ask for one of: {offered}."
+        )
+
+
+def resolve_kind(section_type: str, media_kind: MediaKind | None) -> MediaKind:
+    """The kind a listing returns: the section's root by default, otherwise any kind
+    the section can hold.
+
+    The section must already be known to be modelled. Asking a movie section for
+    episodes has no defined answer from Plex, so it is refused here rather than
+    sent.
+    """
+    kinds = SECTION_KINDS[section_type]
+    if media_kind is None:
+        return kinds[0]
+    if media_kind not in kinds:
+        held = ", ".join(str(kind) for kind in kinds)
+        raise LibraryInvalidArgument(
+            f"a {section_type} section holds {held}; it has no {media_kind} items.",
+            next_action=f"pass media_kind as one of {held}, or leave it out to list "
+            f"{kinds[0]} items",
+        )
+    return media_kind
 
 
 @runtime_checkable

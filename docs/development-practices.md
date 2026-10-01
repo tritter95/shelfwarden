@@ -326,6 +326,10 @@ page = section.search(libtype="movie", container_start=offset, maxresults=limit)
 
 **Both** arguments are required. `container_start` alone still walks the entire remaining result set, because `fetchItems()` loops internally until it has everything. Default container size is 100 (the docs say 50 — the docs are wrong).
 
+**plexapi validates neither.** `container_start = container_start or 0` lets a negative offset onto the wire, and `min(container_size, maxresults)` turns a negative limit into a negative container size — the answer is then whatever the server makes of it. So every provider calls `library.base.check_page` before any request, and refuses a kind the section cannot hold (`resolve_kind`) before the search. Both raise the correctable `LibraryInvalidArgument`. `limit=0` is legal and defined: plexapi sends one count-only request, and the page is empty with the true total. An offset past the end is an empty page, not an error. The full table, one row per edge, is §4.2 of `plans/step-0.7-snapshot-provider.md`.
+
+**A rating key is server-global, so the section half of an `ItemId` never reaches the server.** `PlexLibrary._fetch` checks it locally against the `librarySectionID` that plexapi copies from the response container onto every item, and refuses an item from a section the project does not model. Without the first check, `plex:999:1701` came back as a well-formed id for a section the film is not in. Without the second, a music track fetched by id read as an audiobook part.
+
 ### 4.5 Editing (Phase 3)
 
 Every `edit*`/`add*`/`remove*` helper defaults to `locked=True`, which pins the field against future metadata-agent refreshes. That is a real, persistent side effect that is easy to apply by accident.
@@ -457,6 +461,8 @@ Arize Phoenix, either as one container (`arizephoenix/phoenix:latest`, 6006 UI +
 - **vcrpy** when the test needs a *real* payload shape — including the awkward ones (a garbage-split author list, a book with no `seriesPrimary`, a TVDB series missing an absolute ordering).
 - **respx** when the test needs a *specific* condition that is hard to provoke live — a 429, a truncated body, a malformed field.
 
+A test that must touch a real service is marked `live`, and **`live` is opt-in twice**. `tests/conftest.py` skips it unless `--run-live` is passed, and both CI jobs deselect it with `-m "not live"`. Until step 0.7.1 the marker's description ("never runs in CI") was all that stood behind the claim, while the nightly job ran the suite unfiltered so that `slow` tests would run — which would have run every `live` test as well. `tests/test_live_marker.py` proves the hook in a nested session. Run them by hand: `uv run pytest -m live --run-live`.
+
 Re-record cassettes deliberately, never automatically, and review the diff — a changed upstream shape is information, not noise.
 
 ### 8.2 Determinism has tests
@@ -501,7 +507,7 @@ The mirror-image trap is worth stating too, because it bit step 0.4 and the firs
 
 ### 8.4 CI gating
 
-`.github/workflows/ci.yml`, from step 0.1. The `check` job runs on every push and pull request: `uv sync --locked` (which fails rather than silently re-resolving when `uv.lock` is stale), then `ruff check`, `ruff format --check`, `lint-imports`, `pytest -m "not slow"`, and two CLI smoke steps — `--help`/`--version`, and a migration applied to a fresh database. Each is a separately named step so a red build names the failure without anyone opening the log. A `nightly` job on a cron schedule runs the suite without the `-m` filter.
+`.github/workflows/ci.yml`, from step 0.1. The `check` job runs on every push and pull request: `uv sync --locked` (which fails rather than silently re-resolving when `uv.lock` is stale), then `ruff check`, `ruff format --check`, `lint-imports`, `pytest -m "not slow and not live"`, and two CLI smoke steps — `--help`/`--version`, and a migration applied to a fresh database. Each is a separately named step so a red build names the failure without anyone opening the log. A `nightly` job on a cron schedule runs everything but `live`: `pytest -m "not live"` (§8.1).
 
 `slow` and `live` are registered markers, and `--strict-markers` is on: a typo'd marker is an error, not a silent no-op. That matters most for `live`, where a mistyped skip marker is a test that quietly starts calling a real API. `filterwarnings = ["error"]` was turned on while the suite was still small and warning-free — the expensive order is the other one.
 

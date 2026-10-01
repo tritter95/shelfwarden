@@ -68,6 +68,10 @@ KEEP = {
     "id",
     "name",
     "locked",
+    # Since step 0.7.2 PlexLibrary refuses an item whose section it cannot confirm.
+    # A fetched element gets this from its response container, which fixtures do
+    # not keep; recording it on the element keeps a capture self-describing.
+    "librarySectionID",
 }
 
 TOKEN_PATTERN = re.compile(r"X-Plex-Token=[^&\"']+")

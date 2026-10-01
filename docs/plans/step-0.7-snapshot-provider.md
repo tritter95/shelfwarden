@@ -629,6 +629,7 @@ does. It only reads, because the protocol offers nothing else.
 | unknown section | `LibraryItemNotFound`, with advice about item ids | empty page, total 0 | `LibraryItemNotFound`: "call sections() and use one of its ids" |
 | non-decimal rating key | `ValueError` escapes | `LibraryItemNotFound` | `LibraryItemNotFound`, before any request |
 | item is in a different section | **fabricated id** | `LibraryItemNotFound` | `LibraryItemNotFound`. A response with no `librarySectionID` is a `LibraryProtocolError`, never trusted |
+| item in an unmodelled section, fetched by id | **reads a music track as an audiobook part** | not applicable | `LibraryUnsupported`, as a listing of that section is. Found while building 0.7.2 |
 | foreign provider | `LibraryItemNotFound` | `LibraryItemNotFound` | unchanged |
 | `get_children` on a leaf kind | sent to the server | empty page | empty page, `total=0`, after confirming the item exists |
 | `get_files` on a non-leaf kind | `()` | `()` | `()` (unchanged) |
@@ -1075,4 +1076,100 @@ Beyond the conformance suite:
 
 ## 11. Status
 
-Not started.
+**0.7.1 done, 2026-09-30.** The suite went from 836 to 879 passing; every
+pre-existing test still passes. `ruff` and `lint-imports` are clean, with 8
+contracts kept. The fixture export and the
+`generate --count 200 --seed 1518` dataset are byte-identical to the same run
+before the change: `items.jsonl`, `roots.jsonl`, `census.json`, `truth.json`,
+`deltas.jsonl`, `dataset.json` and `rejected.jsonl`.
+
+What landed:
+
+- **The section vocabulary moved to one place.** `SECTION_ROOT_KIND` is in
+  `library/base.py`. `SECTION_KINDS` is *derived* from it with
+  `models.hierarchy.lineage`. `plex.SECTION_TYPE_TO_KIND` and the export's two
+  copies are gone. The plan put the `plex.py` replacement in 0.7.2, but it is a
+  pure rename and doing it here left one copy rather than four.
+- **`models/hierarchy.py`** holds `CHILD_KIND`, plus `PARENT_KIND` derived as its
+  inverse. Tests tie both to the item classes: a kind has a `parent` field
+  exactly when it has a parent kind, and a `grandparent` field exactly when it is
+  two levels deep.
+- **`item_sort_key`** is in `models/ids.py`, unchanged. `reverse.py` imports it
+  from there; `export.py` imports it for its own use and no longer defines it.
+- **`LibraryInvalidArgument`** is correctable, with no default next action, and a
+  test shows it cannot be constructed without one. **`check_page`** has no
+  callers yet; 0.7.2 wires it in.
+- **`LIVE_PROVIDERS`**, with a test pinning it to `library.plex.PROVIDER`.
+- **`Page` validates its own counts.** `returned == len(items)`, and `offset` and
+  `total` must be ≥ 0.
+- **`live` is opt-in.** `tests/conftest.py` adds `--run-live`, both CI jobs
+  deselect `live`, and `tests/test_live_marker.py` proves the hook in a nested
+  pytester session. With the hook disabled, the default-skip test fails.
+  Development practices §8.1 and §8.4 now describe this behavior.
+
+Two things worth knowing:
+
+- **A temporary gap until 0.7.2.** `PlexLibrary` given a negative offset now makes
+  the request first, and then fails on `Page` construction with a pydantic
+  `ValidationError` instead of returning a meaningless page. 0.7.2's
+  pre-request `check_page` closes this. `FakeLibrary` behaves the same way until
+  0.7.7.
+- **The nested pytester session loads pytest-asyncio.** Its configure-time
+  warning about an unset loop scope is fatal under the outer
+  `filterwarnings = error`, so the nested ini sets
+  `asyncio_default_fixture_loop_scope` exactly as `pyproject.toml` does.
+
+**0.7.2 done, 2026-09-30.** The suite went from 879 to 936 passing. `ruff` and
+`lint-imports` are clean. The fixture export and dataset are byte-identical to the
+pre-0.7.1 run.
+
+Every changed row of §4.2 now holds for `PlexLibrary`. The new tests were run
+against `HEAD`'s `plex.py`, and **33 failed** — one per changed row and
+parameter. The 13 that pin unchanged rows passed against both versions.
+
+Three departures from the plan:
+
+- **`tests/library/fake_plex.py` landed here, not in 0.7.3.** The id check
+  depends on plexapi copying the response container's `librarySectionID` onto
+  the item it builds. A stub that sets the attribute by hand would test our code
+  against our own idea of plexapi. So the tests needed a real `PlexServer` with
+  only `query` overridden, and that is the fake. It serves the committed fixtures:
+  three movies; a show, season and episode; an author, book and part; a music
+  track; and an empty photo section. Requests it does not route are test
+  failures. It also refuses negative paging headers, and refuses to be asked for
+  a leaf's children.
+
+  What 0.7.3 still has to do:
+  - add a second season and more episodes, for the paging properties;
+  - export over the fake;
+  - pin the headers;
+  - switch the fake's ordering and title matching to the model functions once
+    0.7.4 writes them.
+- **A row the plan missed: item-level reads skipped the section check.**
+  `get_item(plex:4:900)` returned an `AudiobookPartItem` for a track in the
+  *music* section, which a listing of that section refuses. `_fetch` now applies
+  `_require_supported` to the item's verified section, and §4.2 has the row.
+- **`LibrarySectionNotFound`**, a subclass of `LibraryItemNotFound`, carries the
+  advice about listing sections. Anything catching "that id does not exist" still
+  catches it, and the advice it gives is now right for a section id.
+
+The shared checks the snapshot will reuse live in `library/base.py`, each with
+unit tests:
+
+- `check_page`
+- `check_search`
+- `check_fetchable` — raises `ValueError` for `STUB`, a programming error, not a
+  `LibraryError`
+- `resolve_kind`
+
+`find_similar` now sends the root kind explicitly. The kinds it returns no longer
+depend on the server's default for an untyped `/all`.
+
+`scripts/capture_fixtures.py` keeps `librarySectionID` from now on. The existing
+fixtures were not re-captured, because the fake's response containers carry the
+section id, as a real server's do. Development practices §4.4 now describes the
+edge semantics and the section check.
+
+The 0.7.1 gap is closed: a negative offset is refused before any request.
+
+Next: 0.7.3.

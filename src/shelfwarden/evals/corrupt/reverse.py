@@ -28,6 +28,7 @@ from shelfwarden.evals.corrupt.model import (
     FieldChange,
     ItemChange,
 )
+from shelfwarden.models.ids import item_sort_key
 from shelfwarden.models.item import NormalizedItem, dump_item, load_item
 from shelfwarden.pointer import JSONValue, set_at
 
@@ -44,7 +45,7 @@ def family_sort_key(item: NormalizedItem) -> tuple[tuple[int, int, str], int, tu
     return (
         census_module.section_sort_key(item.item_id.section_id),
         export_module.KIND_RANK[item.media_kind],
-        export_module.item_sort_key(item.item_id),
+        item_sort_key(item.item_id),
     )
 
 

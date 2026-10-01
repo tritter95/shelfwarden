@@ -246,6 +246,25 @@ class TestSupportingTypes:
         assert (page.total, page.returned) == (42, 1)
         assert Page[ItemStub].model_validate(page.model_dump(mode="json")) == page
 
+    def test_a_count_only_page_is_legal(self):
+        """`limit=0` is Plex's count-only query: no items, the true total."""
+        page = Page[ItemStub](items=(), total=42, offset=0, returned=0)
+        assert (page.total, page.returned) == (42, 0)
+
+    @pytest.mark.parametrize("returned", [0, 2])
+    def test_a_page_that_miscounts_itself_is_refused(self, returned):
+        """The caller's next offset is `offset + returned`, so a miscount skips or
+        repeats items without anything else noticing."""
+        stub = ItemStub(item_id=_id("1"), media_kind=MediaKind.MOVIE, title="Heat")
+        with pytest.raises(ValidationError, match="miscounts itself"):
+            Page[ItemStub](items=(stub,), total=1, offset=0, returned=returned)
+
+    @pytest.mark.parametrize("field", ["offset", "total"])
+    def test_a_negative_offset_or_total_is_refused(self, field):
+        counts = {"offset": 0, "total": 0} | {field: -1}
+        with pytest.raises(ValidationError, match=field):
+            Page[ItemStub](items=(), returned=0, **counts)
+
     def test_section_ref_round_trips(self):
         section = SectionRef(
             section_id="3", title="Movies", section_type="movie", agent="tv.plex.agents.movie"

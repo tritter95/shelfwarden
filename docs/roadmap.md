@@ -183,7 +183,7 @@ Two 0.5 defects, fixed here
 
 ### 0.7 Snapshot provider
 
-> Design detail, the nine verified findings behind it, and the ten decisions taken: [`plans/step-0.7-snapshot-provider.md`](./plans/step-0.7-snapshot-provider.md). Planned, not started.
+> Design detail, the nine verified findings behind it, and the ten decisions taken: [`plans/step-0.7-snapshot-provider.md`](./plans/step-0.7-snapshot-provider.md). In progress. 0.7.1 has landed: the shared vocabulary, `LibraryInvalidArgument`, `Page` validation, and opt-in `live`. 0.7.2 has landed: `PlexLibrary` hardened, with every edge in the plan's §4.2 defined and tested, and the offline `FakePlexServer`. The plan's §11 tracks the rest.
 
 - [ ] `SnapshotLibrary` serving the corrupted dataset through the identical `LibraryProvider` protocol
 - [ ] Same error taxonomy and pagination semantics as `PlexLibrary`

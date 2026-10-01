@@ -20,12 +20,16 @@ from shelfwarden.compare import SupportStrength, compare_title, parse_release_na
 from shelfwarden.library import plex as plex_module
 from shelfwarden.library.base import (
     LibraryAuthError,
+    LibraryInvalidArgument,
     LibraryItemNotFound,
     LibraryProtocolError,
     LibraryProvider,
     LibraryRateLimited,
     LibraryRequestError,
+    LibrarySectionNotFound,
     LibraryUnavailable,
+    LibraryUnsupported,
+    Retryability,
 )
 from shelfwarden.library.plex import (
     PlexLibrary,
@@ -38,6 +42,7 @@ from shelfwarden.library.session import StatusRecorder
 from shelfwarden.models.ids import IdNamespace, ItemId
 from shelfwarden.models.item import FetchProfile, MediaKind, dump_item
 from tests.library.conftest import RecordingServer, StubServer, build, load_fixture
+from tests.library.fake_plex import FakePlexServer
 
 # STUB is excluded deliberately: it describes what a listing returned, not
 # something a caller can ask the server for. See effective_request_params.
@@ -484,3 +489,185 @@ class TestEffectiveRequestParams:
             )
             built = {n: values[0] for n, values in parse_qs(urlparse(key).query).items()}
             assert built == expected, name
+
+
+# -- edge semantics (step 0.7.2) ------------------------------------------
+#
+# The rows of §4.2 in docs/plans/step-0.7-snapshot-provider.md, run against a real
+# PlexServer whose only fake part is `query` (tests/library/fake_plex.py). Each row
+# that changed failed against the 0.7.1 code first; the rest pin what already held.
+
+
+@pytest.fixture
+def fake():
+    return FakePlexServer()
+
+
+@pytest.fixture
+def provider(fake):
+    return PlexLibrary(server=fake)
+
+
+def _plex(section_id: str, rating_key: str) -> ItemId:
+    return ItemId("plex", section_id, rating_key)
+
+
+def _call(provider, method: str, item_id: ItemId):
+    if method == "get_children":
+        return provider.get_children(item_id, 0, 10)
+    return getattr(provider, method)(item_id)
+
+
+ITEM_METHODS = ["get_item", "get_files", "get_children"]
+
+
+class TestArgumentsAreRefusedBeforeAnyRequest:
+    """Refused locally, because the server's answer to them is undefined. The fake
+    server would also fail any request that carried a negative paging header."""
+
+    @pytest.mark.parametrize(("offset", "limit"), [(-1, 10), (0, -1)])
+    def test_list_items_paging(self, fake, provider, offset, limit):
+        mark = len(fake.queries)
+        with pytest.raises(LibraryInvalidArgument):
+            provider.list_items("1", offset, limit)
+        assert fake.requests_since(mark) == []
+
+    @pytest.mark.parametrize(("offset", "limit"), [(-1, 10), (0, -1)])
+    def test_get_children_paging(self, fake, provider, offset, limit):
+        mark = len(fake.queries)
+        with pytest.raises(LibraryInvalidArgument):
+            provider.get_children(_plex("2", "2"), offset, limit)
+        assert fake.requests_since(mark) == []
+
+    @pytest.mark.parametrize(("title", "limit"), [("", 5), ("   ", 5), ("Heat", -1)])
+    def test_find_similar(self, fake, provider, title, limit):
+        mark = len(fake.queries)
+        with pytest.raises(LibraryInvalidArgument) as caught:
+            provider.find_similar("1", title, limit)
+        assert caught.value.next_action
+        assert fake.requests_since(mark) == []
+
+    @pytest.mark.parametrize("method", ITEM_METHODS)
+    @pytest.mark.parametrize("key", ["sw3f9a", "abc", "17O1", "١٢"])
+    def test_a_rating_key_that_is_not_decimal(self, fake, provider, method, key):
+        """It used to raise a bare `ValueError` from `int()`, outside the taxonomy.
+        `١٢` is digits to `str.isdigit` and to `int()`, but no Plex key is written
+        that way."""
+        mark = len(fake.queries)
+        with pytest.raises(LibraryItemNotFound):
+            _call(provider, method, _plex("1", key))
+        assert fake.requests_since(mark) == []
+
+    def test_a_stub_profile_is_a_programming_error(self, fake, provider):
+        """It used to raise a bare `KeyError` that named neither cause nor fix."""
+        mark = len(fake.queries)
+        with pytest.raises(ValueError, match="what a listing returns"):
+            provider.get_item(_plex("1", "1701"), FetchProfile.STUB)
+        assert fake.requests_since(mark) == []
+
+
+class TestAnIdNamesWhereTheItemIs:
+    def test_an_item_fetched_by_its_own_id_carries_that_id(self, provider):
+        item = provider.get_item(_plex("1", "1701"))
+        assert item.item_id == _plex("1", "1701")
+        assert item.title == "Amélie"
+
+    @pytest.mark.parametrize("method", ITEM_METHODS)
+    def test_a_wrong_section_is_refused_and_the_right_id_named(self, provider, method):
+        """It used to come back stamped `plex:2:1701` -- a well-formed id for a
+        section the film is not in."""
+        with pytest.raises(LibraryItemNotFound) as caught:
+            _call(provider, method, _plex("2", "1701"))
+        assert caught.value.next_action == "use plex:1:1701"
+
+    def test_a_response_that_does_not_name_its_section_is_refused(self):
+        provider = PlexLibrary(server=FakePlexServer(omit_section_id=True))
+        with pytest.raises(LibraryProtocolError, match="did not say which section"):
+            provider.get_item(_plex("1", "1701"))
+
+    @pytest.mark.parametrize("method", ITEM_METHODS)
+    def test_an_item_in_a_music_section_is_not_read_as_an_audiobook(self, provider, method):
+        """A listing already refused the music section; a fetch by id read its
+        track as an `AudiobookPartItem`. Found while building 0.7.2."""
+        with pytest.raises(LibraryUnsupported, match="music library"):
+            _call(provider, method, _plex("4", "900"))
+
+    @pytest.mark.parametrize("method", ITEM_METHODS)
+    def test_an_unknown_rating_key_is_correctable(self, provider, method):
+        with pytest.raises(LibraryItemNotFound) as caught:
+            _call(provider, method, _plex("1", "99999"))
+        assert caught.value.retryability is Retryability.CORRECTABLE
+
+
+class TestListing:
+    def test_the_default_kind_is_the_sections_root(self, provider):
+        page = provider.list_items("2", 0, 10)
+        assert {stub.media_kind for stub in page.items} == {MediaKind.SHOW}
+
+    def test_any_kind_the_section_holds_can_be_asked_for(self, provider):
+        page = provider.list_items("2", 0, 10, MediaKind.EPISODE)
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:4"]
+
+    def test_a_kind_the_section_cannot_hold_is_refused_before_the_search(self, fake, provider):
+        """It used to be sent, and the answer was whatever the server made of
+        episodes in a movie section."""
+        mark = len(fake.queries)
+        with pytest.raises(LibraryInvalidArgument, match="movie section holds movie") as caught:
+            provider.list_items("1", 0, 10, MediaKind.EPISODE)
+        assert "movie" in caught.value.next_action
+        assert not any("/all" in key for key in fake.requests_since(mark))
+
+    def test_a_count_only_page_carries_the_true_total(self, provider):
+        page = provider.list_items("1", 0, 0)
+        assert (page.returned, page.total) == (0, 3)
+
+    def test_an_offset_past_the_end_is_an_empty_page_not_an_error(self, provider):
+        page = provider.list_items("1", 10, 5)
+        assert (page.returned, page.total, page.offset) == (0, 3, 10)
+
+    def test_an_unknown_section_says_to_list_the_sections(self, provider):
+        """It used to repeat the advice for a stale *item* id."""
+        with pytest.raises(LibrarySectionNotFound) as caught:
+            provider.list_items("999", 0, 5)
+        assert "sections" in caught.value.next_action
+        assert isinstance(caught.value, LibraryItemNotFound)
+
+    def test_an_unmodelled_section_is_unsupported(self, provider):
+        with pytest.raises(LibraryUnsupported, match="photo"):
+            provider.list_items("5", 0, 5)
+
+
+class TestChildren:
+    def test_a_show_lists_its_seasons(self, provider):
+        page = provider.get_children(_plex("2", "2"), 0, 10)
+        assert [str(stub.item_id) for stub in page.items] == ["plex:2:3"]
+
+    @pytest.mark.parametrize(("section_id", "key"), [("1", "1701"), ("2", "4"), ("3", "7")])
+    def test_a_leaf_has_no_children_and_the_server_is_not_asked(
+        self, fake, provider, section_id, key
+    ):
+        mark = len(fake.queries)
+        page = provider.get_children(_plex(section_id, key), 0, 10)
+        assert (page.items, page.total, page.returned) == ((), 0, 0)
+        assert not any(k.endswith("/children") for k in fake.requests_since(mark))
+
+    def test_a_non_leaf_has_no_files(self, provider):
+        assert provider.get_files(_plex("2", "2")) == ()
+
+
+class TestFindSimilar:
+    def test_the_root_kind_is_sent_rather_than_left_to_the_server(self, fake, provider):
+        mark = len(fake.queries)
+        provider.find_similar("1", "Amé", 5)
+        (search,) = [key for key in fake.requests_since(mark) if "/all" in key]
+        assert "type=1" in search
+
+    def test_a_limit_of_zero_finds_nothing(self, provider):
+        assert provider.find_similar("1", "Amé", 0) == ()
+
+    def test_an_audiobook_section_finds_authors_not_books(self, provider):
+        """Faithful to Plex, and a recorded limit: a book cannot be found by its
+        own title through this method."""
+        (author,) = provider.find_similar("3", "Sanderson", 5)
+        assert author.media_kind is MediaKind.AUTHOR
+        assert provider.find_similar("3", "Words of Radiance", 5) == ()

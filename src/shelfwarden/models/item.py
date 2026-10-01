@@ -12,9 +12,17 @@ the boundary, enforced by an import contract rather than by discipline.
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from shelfwarden.canonical import canonical_text
 from shelfwarden.models.ids import ExternalId, ItemId, sort_external_ids
@@ -288,14 +296,31 @@ class Page[T](BaseModel):
 
     `total` and `returned` are separate on purpose: a caller must be able to tell a
     short page from the end of the results without inferring it.
+
+    The counts are checked at construction (step 0.7), so a provider cannot report a
+    page that disagrees with itself. `returned` is the length of `items`, and is
+    declared rather than computed because it is part of the wire shape a tool
+    returns. `offset` and `total` cannot be negative. A negative offset is refused
+    before any provider fetches (`library.base.check_page`); this is the backstop,
+    so a provider that forgets the check fails loudly instead of serving a page
+    that has no meaning.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     items: tuple[T, ...]
-    total: int
-    offset: int
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
     returned: int
+
+    @model_validator(mode="after")
+    def _returned_counts_the_items(self) -> Self:
+        if self.returned != len(self.items):
+            raise ValueError(
+                f"returned={self.returned} but the page holds {len(self.items)} item(s); "
+                "a page that miscounts itself makes the caller's next offset wrong"
+            )
+        return self
 
 
 def with_changes(item: NormalizedItem, changes: Mapping[str, Any]) -> NormalizedItem:
