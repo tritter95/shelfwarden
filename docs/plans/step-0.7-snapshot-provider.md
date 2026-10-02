@@ -1412,4 +1412,73 @@ Measured: the fixture's 25 worlds build in 0.02 s. Finding 9's estimate for a
 5,000-record export still waits for a real export.
 
 
-Next: 0.7.7.
+**0.7.7 done, 2026-10-01: the gate is met offline.** The suite went from 1114 to
+1163 passing. 21 are skipped: the 19 `live` tests, which need `--run-live`, and
+the two model-only properties `FakeLibrary` does not claim. `ruff` and
+`lint-imports` are clean. The fixture export and dataset are byte-identical to the
+0.7.5 run.
+
+- **`FakeLibrary` is the third subject.** Added to the suite before any fix, it
+  failed 17 tests. Most failed through the suite's `listable` helper, because a
+  photo section listed without refusing. With that fixed, it routes through the
+  same `library.base` checks the real providers use:
+  - a photo section, and the fake's music section, refuse with `LibraryUnsupported`;
+  - an unknown section is `LibrarySectionNotFound`;
+  - the default kind is the section's root, and a foreign kind is refused;
+  - paging arguments are checked before any slice;
+  - `find_similar` returns roots only, and refuses a blank title or a negative
+    limit;
+  - `get_item`, `get_children` and `get_files` share one lookup. An unknown id or a
+    foreign label is `LibraryItemNotFound`; a wrong-section id is answered with the
+    right one; `STUB` is the shared `ValueError`.
+
+  It keeps what Decision 9 says it keeps: insertion order, any profile (restamped),
+  its fault injection, and its own case-insensitive match. The plan counted four
+  divergences, and 0.7.4's run six. There are ten. The first masked the rest, so
+  each fix was then reverted **alone**, and the suite failed every time. The
+  failures were in P1, P5, P10, P11 or P12, depending on the fix.
+- **P10 is split.** Roots only, at most `limit`, in listing order, and every root
+  found by its own title: that half applies to every subject, and it failed only
+  against the unfixed fake. Exact agreement with `title_matches` stays model-only.
+- **The live subject** reads `SHELFWARDEN_PLEX_URL`/`_TOKEN` through
+  `load_settings`, as `export` does. It is marked `live`, so CI's `-m "not live"`
+  deselects it and `--run-live` is needed to run it. It reads each listing over a
+  window of 50, two pages of 25:
+  - paging properties use a spread of windows inside what was read;
+  - P8 checks that each child names its parent, and records that completeness
+    cannot be checked in a window;
+  - P12's huge limit is capped at the window, and says so;
+  - P10 becomes three probes per root (case-flipped, accent-stripped, and
+    sort-title only). Each disagreement with `title_matches` is reported as a
+    counterexample.
+
+  What the window covered is printed in a `live coverage` section of the run's
+  summary, so the bound is never a silent cap. P11's "no such item" key is now
+  `999999999`, which no real library holds.
+- **`plex-windowed`, a fourth offline subject**, is the live subject's bounded mode
+  over the fake server, with a window of 2. Every branch a live run takes runs on
+  every commit. Two tests patch the fake server, once to fold accents and once to
+  match sort titles. They show the probes name exactly that departure.
+- **The differential** exports `PlexLibrary(FakePlexServer)` whole and builds the
+  export's own world. It then compares, through `Addressing`, every page of every
+  listing (default kind included), every item at the held profile, every page of
+  every item's children, every file list, every search, and ten edge errors. The
+  errors agree on type, retryability and advice, and a misfiled id names the right
+  id, translated. The three declared differences are each a test: sections Plex
+  lists but the snapshot does not (and each refuses to list), the other profile
+  refused, and ids relabelled with keys unchanged. Three deliberate breaks of
+  `SnapshotLibrary` were each caught by the differential as well as by a property:
+  a total counting the page, children in listing order, and a search leaking
+  non-roots. It is circular for server semantics, as Decision 6 says.
+- **The round trip.** Exporting the snapshot gives back `items.jsonl` and
+  `roots.jsonl` byte for byte once unserved, the same `census.json`, and the same
+  manifest sections and counts. One thing it found: the census names example items
+  (`items_without_guids`), so it matches only once those ids are translated back.
+  `test_world.py` adds the corrupted case. Every fixture case world, exported
+  through the export's own walk, gives back that world, reissued keys and minted
+  file ids included.
+
+Not done here: the live run itself. It needs your server, and it is 0.7.8's exit
+checklist item: `uv run pytest -m live --run-live tests/library/test_conformance.py`.
+
+Next: 0.7.8.

@@ -18,11 +18,18 @@ from dataclasses import dataclass, field
 import pytest
 
 from shelfwarden.library.base import (
+    SECTION_ROOT_KIND,
     LibraryItemNotFound,
+    LibrarySectionNotFound,
     LibraryUnavailable,
     LibraryUnsupported,
     ProviderInfo,
+    check_fetchable,
+    check_page,
+    check_search,
+    resolve_kind,
 )
+from shelfwarden.models.hierarchy import CHILD_KIND
 from shelfwarden.models.ids import ItemId, parse_guids
 from shelfwarden.models.item import (
     AudiobookItem,
@@ -39,6 +46,7 @@ from shelfwarden.models.item import (
     SeasonItem,
     SectionRef,
     ShowItem,
+    stub_of,
     with_changes,
 )
 
@@ -298,56 +306,53 @@ class FakeLibrary:
         limit: int,
         media_kind: MediaKind | None = None,
     ) -> Page[ItemStub]:
-        if section_id in self.unsupported:
-            raise LibraryUnsupported(
-                f"section {section_id!r} looks like a music library, not audiobooks: "
-                "not audiobooks [sampled 3/3] agent_identifier=no"
-            )
-        matches = [
-            record
-            for record in self._ordered()
-            if record.item_id.section_id == section_id
-            and (media_kind is None or record.media_kind is media_kind)
-        ]
-        window = matches[offset : offset + limit]
-        return Page[ItemStub](
-            items=tuple(self._stub(record) for record in window),
-            total=len(matches),
-            offset=offset,
-            returned=len(window),
+        check_page(offset, limit)
+        section = self._section(section_id)
+        kind = resolve_kind(section.section_type, media_kind)
+        return _page(
+            [
+                record
+                for record in self._ordered()
+                if record.item_id.section_id == section_id and record.media_kind is kind
+            ],
+            offset,
+            limit,
         )
 
     def get_item(
         self, item_id: ItemId, profile: FetchProfile = FetchProfile.CORE
     ) -> NormalizedItem:
-        key = str(item_id)
-        self.get_item_calls.append(key)
-        if key in self.unavailable:
-            raise LibraryUnavailable(f"the server went away while fetching {key}")
-        if key in self.missing or key not in self.records:
-            raise LibraryItemNotFound(f"no item {key}")
-        return with_changes(self.records[key], {"fetched": profile})
+        """Any profile, restamped: this stands in for a server, which answers every
+        profile, not for an export, which holds one (step 0.7, Decision 9)."""
+        check_fetchable(profile)
+        self.get_item_calls.append(str(item_id))
+        return with_changes(self._record(item_id), {"fetched": profile})
 
     def get_children(self, item_id: ItemId, offset: int, limit: int) -> Page[ItemStub]:
-        matches = [
-            record for record in self._ordered() if getattr(record, "parent", None) == item_id
-        ]
-        window = matches[offset : offset + limit]
-        return Page[ItemStub](
-            items=tuple(self._stub(record) for record in window),
-            total=len(matches),
-            offset=offset,
-            returned=len(window),
+        check_page(offset, limit)
+        if self._record(item_id).media_kind not in CHILD_KIND:
+            return Page[ItemStub](items=(), total=0, offset=offset, returned=0)
+        return _page(
+            [record for record in self._ordered() if getattr(record, "parent", None) == item_id],
+            offset,
+            limit,
         )
 
     def get_files(self, item_id: ItemId) -> tuple[FilePart, ...]:
-        return tuple(getattr(self.records[str(item_id)], "parts", ()))
+        return tuple(getattr(self._record(item_id), "parts", ()))
 
     def find_similar(self, section_id: str, title: str, limit: int) -> tuple[ItemStub, ...]:
+        """Root items only, as Plex answers an untyped search. The match is a plain
+        case-insensitive substring: this fake does not claim the model of Plex, and
+        the conformance suite holds it only to what every provider owes."""
+        check_search(title, limit)
+        root = SECTION_ROOT_KIND[self._section(section_id).section_type]
         return tuple(
-            self._stub(record)
+            stub_of(record)
             for record in self._ordered()
-            if record.item_id.section_id == section_id and title.lower() in record.title.lower()
+            if record.item_id.section_id == section_id
+            and record.media_kind is root
+            and title.lower() in record.title.lower()
         )[:limit]
 
     # -- helpers ----------------------------------------------------------
@@ -360,13 +365,61 @@ class FakeLibrary:
         """
         return list(self.records.values())
 
-    def _stub(self, record: NormalizedItem) -> ItemStub:
-        return ItemStub(
-            item_id=record.item_id,
-            media_kind=record.media_kind,
-            title=record.title,
-            year=getattr(record, "year", None),
-        )
+    def _section(self, section_id: str) -> SectionRef:
+        """A section that can be listed, refused as `PlexLibrary` refuses it."""
+        section = next((s for s in self.sections_ if s.section_id == section_id), None)
+        if section is None:
+            raise LibrarySectionNotFound(f"no section with id {section_id!r}")
+        if section.section_type not in SECTION_ROOT_KIND:
+            raise LibraryUnsupported(
+                f"{section.section_type!r} sections are not modelled; ShelfWarden handles "
+                "movie, show, and audiobook (artist) sections"
+            )
+        if section_id in self.unsupported:
+            raise LibraryUnsupported(
+                f"section {section_id!r} looks like a music library, not audiobooks: "
+                "not audiobooks [sampled 3/3] agent_identifier=no"
+            )
+        return section
+
+    def _record(self, item_id: ItemId) -> NormalizedItem:
+        """The record an id names, with the faults this fake was told to inject."""
+        key = str(item_id)
+        if item_id.provider != PROVIDER:
+            raise LibraryItemNotFound(
+                f"{item_id} belongs to provider {item_id.provider!r}, not {PROVIDER!r}"
+            )
+        if key in self.unavailable:
+            raise LibraryUnavailable(f"the server went away while fetching {key}")
+        record = None if key in self.missing else self.records.get(key)
+        if record is None:
+            located = next(
+                (
+                    other
+                    for other in self.records.values()
+                    if other.item_id.rating_key == item_id.rating_key
+                ),
+                None,
+            )
+            if located is not None and key not in self.missing:
+                raise LibraryItemNotFound(
+                    f"{item_id} names section {item_id.section_id!r}, but rating key "
+                    f"{item_id.rating_key} is in section {located.item_id.section_id!r}",
+                    next_action=f"use {located.item_id}",
+                )
+            raise LibraryItemNotFound(f"no item {key}")
+        self._section(record.item_id.section_id)
+        return record
+
+
+def _page(records: list[NormalizedItem], offset: int, limit: int) -> Page[ItemStub]:
+    window = records[offset : offset + limit]
+    return Page[ItemStub](
+        items=tuple(stub_of(record) for record in window),
+        total=len(records),
+        offset=offset,
+        returned=len(window),
+    )
 
 
 @pytest.fixture

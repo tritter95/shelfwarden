@@ -19,6 +19,11 @@ pytest_plugins = ["pytester"]
 
 RUN_LIVE = "--run-live"
 
+# What a bounded `live` run actually covered. A live library is too large to walk
+# whole, so the conformance suite reads each listing over a window and records
+# what that window held; the summary prints it, so the bound is never a silent cap.
+LIVE_COVERAGE = pytest.StashKey[list[str]]()
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
@@ -36,3 +41,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if item.get_closest_marker("live") is not None:
             item.add_marker(skip)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.stash[LIVE_COVERAGE] = []
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
+    covered = config.stash.get(LIVE_COVERAGE, [])
+    if covered:
+        terminalreporter.section("live coverage")
+        for line in covered:
+            terminalreporter.write_line(line)

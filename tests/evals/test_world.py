@@ -632,6 +632,22 @@ class TestWorldId:
         assert len(outputs[0].splitlines()) == 25
 
 
+# -- the round trip ---------------------------------------------------------------
+
+
+class TestRoundTrip:
+    def test_exporting_a_case_world_reproduces_it(self, worlds, deltas, exported, tmp_path):
+        """The export's own walk over every fixture world, reissued keys and minted
+        file ids included, gives back the world modulo addressing. The clean-world
+        version, byte for byte against `items.jsonl`, is in the conformance suite."""
+        for case_id, world in worlds.items():
+            again = run_export(world.provider, tmp_path / case_id, count=None)
+            assert again.manifest.provider.server_id == world.world_id
+            assert render_family([world.addressing.unserve(r) for r in again.items]) == (
+                render_family(apply_changes(exported.items, deltas[case_id]))
+            ), case_id
+
+
 # -- the report -----------------------------------------------------------------------
 
 
