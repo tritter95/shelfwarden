@@ -58,7 +58,7 @@ from shelfwarden.library.base import (
 )
 from shelfwarden.library.session import StatusRecorder, build_session, status_from_message
 from shelfwarden.models.hierarchy import CHILD_KIND
-from shelfwarden.models.ids import ItemId, parse_guids
+from shelfwarden.models.ids import ItemId, is_decimal, parse_guids
 from shelfwarden.models.item import (
     AudiobookItem,
     AudiobookPartItem,
@@ -595,7 +595,7 @@ def _rating_key(item_id: ItemId) -> int:
     """The decimal key Plex addresses an item by, refused before any request when
     the id holds anything else."""
     key = item_id.rating_key
-    if not (key.isascii() and key.isdigit()):
+    if not is_decimal(key):
         raise LibraryItemNotFound(
             f"{item_id} has rating key {key!r}; Plex rating keys are decimal numbers"
         )

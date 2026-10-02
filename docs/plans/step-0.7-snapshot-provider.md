@@ -1027,7 +1027,7 @@ Beyond the conformance suite:
 
 | Step | Inherits |
 |---|---|
-| 0.8 | `Addressing`, to translate finding ids before comparing them with `truth.json`. Unchanged `item_ids`, plus soft postconditions on propagated children. The runner, not the world builder, should check the case's `corruption_fingerprint` against its delta, since the runner already holds the `Case`. |
+| 0.8 | `Addressing`, to translate finding ids before comparing them with `truth.json`. Postconditions hold ids as *values* too (an episode's expected `/parent`), so the simplest comparison is `unserve` over the repaired world rather than translating each expectation. An unknown id raises `AddressingError`, which is an unbound referent, not a crash. Unchanged `item_ids`, plus soft postconditions on propagated children. The runner, not the world builder, should check the case's `corruption_fingerprint` against its delta, since the runner already holds the `Case`. |
 | 1.3 | A provider whose every failure the model can cause is a `LibraryError`, with a `next_action` that can be shown to the model as written. The open question of whether tool payloads render the provider component. `find_similar`'s root-kind limit. |
 | 1.6 / 1.7 | Call `WorldBuilder.open` once per dataset and `.world(case_id)` once per case, pass `provider` alone to the loop, and record `world_id` on the run. A non-CORE export cannot serve the tools' CORE requests, so the runner should refuse it at startup rather than on the first call. |
 | Phase 3 | A world the mutable snapshot can start from, and an address space that a plan recorded during an eval run cannot carry to the live server. |
@@ -1338,4 +1338,78 @@ is byte-identical. Only two cases changed delta, fingerprint and expectation:
 the seasons' and episodes' copied titles, and the author's album count. No hard
 gate or `must_not_change` moved.
 
-Next: 0.7.6.
+
+**0.7.6 done, 2026-10-01.** The suite went from 1065 to 1114 passing. `ruff` and
+`lint-imports` are clean. The fixture export and dataset are byte-identical to the
+0.7.5 run: `items.jsonl`, `roots.jsonl`, `census.json`, and all five dataset
+files.
+
+- **`evals/world.py`.** `WorldBuilder.open(export, dataset)` binds and
+  `.world(case_id)` builds; `world_for_case` is the one-shot form.
+  `python -m shelfwarden.evals.world <export> [<dataset>]` prints the integrity
+  report. Every fixture case builds, and serves `apply_changes(export, delta)` byte
+  for byte through `Addressing`. That is checked through the protocol (every
+  section, every kind, every record fetched), not from the records handed in. The
+  two should-not-touch cases share the export's own world id.
+- **Binding refuses** an export the dataset was not generated from (both hashes
+  named), an `items.jsonl` its manifest does not describe, a census-only export,
+  a directory with no manifest or no `dataset.json`, a dataset schema it cannot
+  read, an id under another provider label, an unknown case, a case with two delta
+  lines, and a `deltas.jsonl` whose case count disagrees with `dataset.json`.
+  A delta that fails strict application is reported with its case id.
+- **Integrity runs in the dataset's address space first**, so a refusal names the
+  ids a truth file uses. The structural rules are absolute, and the derived-copy
+  rule is relative to the export. The snapshot's own checks then run over the
+  served records as a backstop. Whether to say "regenerate" is decided by running
+  `propagate` over the failed world: if that leaves nothing broken, the delta is one
+  the recipes now repair. Nothing in the dataset records which code produced it
+  closely enough to decide this by version. `WorldIntegrityError` gained a `note`
+  for this.
+- **The mutation check.** Five deliberate breaks of the builder were each run
+  against the tests: serving dataset keys, minting no file ids, taking the
+  largest key from the world alone, skipping the derived-copy rule, and leaving
+  the sections out of `world_id`. The first four each failed the tests meant to
+  catch them. The fifth survived, and
+  `test_the_sections_are_part_of_the_world` was added for it.
+
+Departures from §4.4, each deliberate:
+
+- **`Addressing` covers the export as well as the world.** A REMOVE takes a record
+  out of the world, and the truth file still names it: `absolute_vs_seasonal`
+  writes a soft "present again" postcondition on the season it removed. So the map
+  covers every id in the export, the world, and their parent links. For the same
+  reason, a reissued key is placed above the largest in *either* set, so a minted
+  item can never land on the address of one the delta took away. In the fixture,
+  every minted key becomes `2222`, one above the largest episode.
+- **Minted file ids map back by value, not position.** Each is unique in the world
+  and above every real one, so `unserve` blanks it wherever it sits. A Phase 3
+  repair that reorders parts will not strand one.
+- **`ExportedLibrary`** reads and checks an export once, and builds a world from
+  any delta, including none. The report needs the export's own world, and 0.7.7's
+  differential needs a world of an export with no dataset at all.
+  `WorldBuilder.bind` reuses one already read.
+- **`deltas.jsonl` is indexed at `open`, not streamed per case.** Each line is
+  parsed once for its `case_id` and held unparsed, which is what makes a duplicate
+  or a truncation detectable without reading the file again per case. The changes
+  are parsed only when that case's world is built. The plan's reason for
+  streaming, not parsing every case's ground truth, still holds: the builder never
+  opens `truth.json`.
+
+Two defects found and fixed on the way:
+
+- **0.6's `dataset.json` could not be read back.** `render_dataset` drops nulls,
+  and `problem_class` on a should-not-touch cell, and on its deficit row, was a
+  required `ProblemClass | None`. Dropped on write, it was missing on read. Nothing
+  had read the file back before the world builder did. Both fields are now
+  defaulted to `None`, the pattern `corrupt/report.py` already used. The bytes are
+  unchanged, and a round-trip test fails without the fix.
+- **`item_sort_key` raised on a key like `"²"`.** `str.isdigit` accepts it and
+  `int()` refuses it. `models.ids.is_decimal` (ASCII digits only) is now the one
+  definition of a decimal key. `item_sort_key`, `PlexLibrary`'s key check,
+  `snapshot.section_key` and the world builder use it. No real key changes order.
+
+Measured: the fixture's 25 worlds build in 0.02 s. Finding 9's estimate for a
+5,000-record export still waits for a real export.
+
+
+Next: 0.7.7.

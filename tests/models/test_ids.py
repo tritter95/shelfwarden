@@ -12,6 +12,7 @@ from shelfwarden.models.ids import (
     ExternalId,
     IdNamespace,
     ItemId,
+    is_decimal,
     item_sort_key,
     parse_guid,
     parse_guids,
@@ -24,6 +25,30 @@ def test_rating_keys_sort_numerically_and_anything_else_after():
     keys = ["10", "sw1a", "9", "2", "sw0b"]
     ordered = sorted((ItemId("plex", "1", key) for key in keys), key=item_sort_key)
     assert [item_id.rating_key for item_id in ordered] == ["2", "9", "10", "sw0b", "sw1a"]
+
+
+@pytest.mark.parametrize(
+    ("key", "decimal"),
+    [
+        ("1701", True),
+        ("0", True),
+        ("sw1a", False),
+        ("", False),
+        ("1.5", False),
+        ("-3", False),
+        ("²", False),
+        ("١٢", False),
+    ],
+)
+def test_a_decimal_key_is_ascii_digits_alone(key, decimal):
+    """`str.isdigit` says yes to `"²"`, which `int()` refuses, and to `"١٢"`, which
+    `int()` reads as 12. Plex issues neither."""
+    assert is_decimal(key) is decimal
+
+
+def test_a_superscript_key_sorts_as_text_instead_of_raising():
+    ordered = sorted((ItemId("plex", "1", key) for key in ("²", "3")), key=item_sort_key)
+    assert [item_id.rating_key for item_id in ordered] == ["3", "²"]
 
 
 class TestItemId:

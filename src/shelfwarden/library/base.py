@@ -94,8 +94,12 @@ class ProviderInfo:
     that identifies it. `scripts/capture_fixtures.py` already scrubs the raw value
     from committed fixtures; recording it verbatim here would undo that.
 
-    `SnapshotLibrary` (step 0.7) returns `provider="snapshot"` with the dataset id
-    as `server_id`, so a re-export of a corrupted dataset carries the same shape.
+    `SnapshotLibrary` (step 0.7) returns `provider="snapshot"` with the **world
+    id** as `server_id`, not the dataset id step 0.2 planned. One dataset is many
+    libraries -- a world per case -- and `server_id` answers *is this the same
+    library?* Two cases whose worlds are byte-identical share one. Its
+    `server_version` and `platform` are `None`: nothing honest can be said about
+    either.
     """
 
     provider: str

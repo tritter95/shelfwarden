@@ -51,7 +51,7 @@ from shelfwarden.library.base import (
     resolve_kind,
 )
 from shelfwarden.models.hierarchy import CHILD_KIND, Violation, structural_violations
-from shelfwarden.models.ids import ItemId, item_sort_key
+from shelfwarden.models.ids import ItemId, is_decimal, item_sort_key
 from shelfwarden.models.item import (
     FetchProfile,
     FilePart,
@@ -95,7 +95,7 @@ def children_key(record: NormalizedItem) -> tuple[bool, int, tuple[int, int, str
 def section_key(section: SectionRef) -> tuple[int, int, str]:
     """The order of the sections: numerically by id, as Plex numbers them."""
     key = section.section_id
-    return (0, int(key), "") if key.isascii() and key.isdigit() else (1, 0, key)
+    return (0, int(key), "") if is_decimal(key) else (1, 0, key)
 
 
 def title_matches(query: str, record: NormalizedItem) -> bool:
@@ -130,17 +130,19 @@ class WorldIntegrityError(ValueError):
     """The records are not a library Plex could serve. Raised at construction.
 
     A `ValueError`, not a `LibraryError`: it is never raised to the agent, only to
-    whatever built the world, and it means that code built it wrong.
+    whatever built the world, and it means that code built it wrong. `note` is
+    whatever the builder knows that the records do not: which case, and whether
+    regenerating would help.
     """
 
-    def __init__(self, violations: Sequence[Violation]) -> None:
+    def __init__(self, violations: Sequence[Violation], note: str = "") -> None:
         self.violations = tuple(violations)
         shown = "\n".join(f"  {violation}" for violation in self.violations[:SHOWN_VIOLATIONS])
         hidden = len(self.violations) - SHOWN_VIOLATIONS
         tail = f"\n  ...and {hidden} more, all on .violations" if hidden > 0 else ""
         super().__init__(
             f"{len(self.violations)} way(s) these records are not a library Plex could "
-            f"serve:\n{shown}{tail}"
+            f"serve:\n{shown}{tail}" + (f"\n{note}" if note else "")
         )
 
 

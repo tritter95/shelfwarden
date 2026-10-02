@@ -35,11 +35,14 @@ from shelfwarden.evals.corrupt.run import read_export_with_population
 from shelfwarden.evals.curated import CURATED_FILES, CURATED_ROOT
 from shelfwarden.evals.export import run_export
 from shelfwarden.evals.generate import (
+    DATASET_FILE,
     DELTAS_FILE,
     MAX_CASES_PER_SUBJECT,
     TRUTH_FILE,
+    Dataset,
     GenerateError,
     generate,
+    render_dataset,
     run_generate,
 )
 from shelfwarden.evals.screen import Verdict, build_screen
@@ -650,6 +653,16 @@ class TestEveryCase:
         payload = (directory / TRUTH_FILE).read_bytes()
         assert payload == render_truth(result.truth)
         assert render_truth(load_truth(payload)) == payload
+
+    def test_the_dataset_file_reads_back_as_what_was_rendered(self, every_slice):
+        """Written without nulls, so every `None`-able field must be defaulted to
+        parse again. A should-not-touch cell's `problem_class` was not: nothing read
+        `dataset.json` back until the world builder (step 0.7.6) did, and failed."""
+        result, directory = every_slice
+        payload = (directory / DATASET_FILE).read_bytes()
+        assert payload == render_dataset(result.dataset)
+        assert any(cell.problem_class is None for cell in result.dataset.cells)
+        assert Dataset.model_validate_json(payload) == result.dataset
 
 
 def _cases_only(payload):

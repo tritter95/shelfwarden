@@ -143,7 +143,10 @@ class CellResult(_Frozen):
 
     slice: truth_module.Slice
     media_kind: MediaKind
-    problem_class: ProblemClass | None
+    # `None` on a should-not-touch cell, and defaulted because `render_dataset` uses
+    # `exclude_none`: a field with no default is dropped on write and missing on
+    # read. Found in step 0.7.6, the first code to read `dataset.json` back.
+    problem_class: ProblemClass | None = None
     intended: int
     achievable: int
     candidates: int
@@ -967,6 +970,8 @@ def _assert_unique(cases: Sequence[truth_module.Case]) -> None:
 
 
 def render_dataset(dataset: Dataset) -> bytes:
+    """Without nulls, as `screen.json` is written: every `None`-able field in the
+    tree is defaulted, so absent re-parses as `None`, and a test reads it back."""
     return canonical_json(dataset.model_dump(mode="json", exclude_none=True))
 
 

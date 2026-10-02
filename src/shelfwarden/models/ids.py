@@ -101,6 +101,17 @@ class ItemId:
         return cls(*parts)
 
 
+def is_decimal(key: str) -> bool:
+    """Whether a key is the kind Plex issues: ASCII digits and nothing else.
+
+    `str.isdigit` alone is not that test. It accepts `"²"`, on which `int()`
+    raises, and `"١٢"`, which `int()` reads as 12. Rating keys, part ids and
+    section ids are all decimal on a real server, so anything else is either
+    minted by this project or a typo.
+    """
+    return key.isascii() and key.isdigit()
+
+
 def item_sort_key(item_id: ItemId) -> tuple[int, int, str]:
     """Numeric rating keys sort numerically; anything else sorts after, by text.
 
@@ -113,7 +124,7 @@ def item_sort_key(item_id: ItemId) -> tuple[int, int, str]:
     import `evals/`.
     """
     key = item_id.rating_key
-    return (0, int(key), "") if key.isdigit() else (1, 0, key)
+    return (0, int(key), "") if is_decimal(key) else (1, 0, key)
 
 
 @dataclass(frozen=True, slots=True)

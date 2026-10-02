@@ -116,7 +116,9 @@ class Cell(_Frozen):
 class CompositionDeficit(_Frozen):
     slice: Slice
     media_kind: MediaKind
-    problem_class: ProblemClass | None
+    # Defaulted for the reason on `generate.CellResult.problem_class`: written to
+    # `dataset.json` without nulls, and read back by the world builder.
+    problem_class: ProblemClass | None = None
     intended: int
     achievable: int
     reason: DeficitReason
